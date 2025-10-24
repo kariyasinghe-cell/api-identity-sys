@@ -11,5 +11,5 @@ name: Build and Release API Repo
 jobs:
   release_repo:
     name: Release Repo
-    uses: wso2-cicd/wso2-workflows/.github/workflows/release-apim-api.yml@main
+    uses: kariyasinghe-cell/wso2-workflows/.github/workflows/release-apim-api.yml@main
     secrets: inherit

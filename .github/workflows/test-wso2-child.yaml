@@ -1,13 +1,12 @@
-name: Trigger Master Workflow
+name: Parent Workflow
 
 on:
   workflow_dispatch:
 
 jobs:
-  call-master:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger child workflow
-        uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
-        with:
-          includeFolders: "SampleAPI, v2"
+  call-child:
+    # Job-level 'uses' references the child workflow
+    uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
+    with:
+      includeFolders: "SampleAPI,v2"
+    secrets: inherit   # optional, if child workflow needs repo secrets

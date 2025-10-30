@@ -10,4 +10,4 @@ jobs:
       - name: Trigger child workflow
         uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
         with:
-          includeFolders: "SampleAPI,v2"
+          includeFolders: "SampleAPI, v2"

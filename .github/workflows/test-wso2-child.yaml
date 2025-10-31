@@ -7,5 +7,5 @@ jobs:
     uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
     with:
       includeAPIs: "SampleAPI, v2"
-      fromChild: "true"
+      triggeredBy: "developer"
     secrets: inherit

@@ -1,0 +1,16 @@
+name: WSO2 APIM API Deploying
+on:
+  workflow_dispatch:
+    inputs:
+      includeAPIs:
+        description: 'Comma-separated list of APIM APIs to include (leave empty to include all)'
+        required: false
+        default: ''
+
+jobs:
+  deploy-apis:
+    uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
+    with:
+      includeAPIs: "SampleAPI, v2"
+      triggeredBy: "apim-team"
+    secrets: inherit

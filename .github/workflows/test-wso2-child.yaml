@@ -1,4 +1,4 @@
-name: WSO2 APIM API IMPORT
+name: WSO2 APIM API Import
 on:
   workflow_dispatch:
 

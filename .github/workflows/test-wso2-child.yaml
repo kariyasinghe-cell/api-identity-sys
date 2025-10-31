@@ -1,9 +1,9 @@
-name: WSO2 APIM API Import
+name: WSO2 APIM API Deploying
 on:
   workflow_dispatch:
 
 jobs:
-  import-apis:
+  deploy-apis:
     uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
     with:
       includeAPIs: "SampleAPI, v2"

@@ -1,4 +1,4 @@
-name: WSO2 APIM API Deploying
+name: WSO2 APIM API Deploying - Developer
 on:
   workflow_dispatch:
 

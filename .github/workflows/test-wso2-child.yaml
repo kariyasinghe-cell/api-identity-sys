@@ -1,13 +1,11 @@
-name: Parent Workflow
-
+name: WSO2 APIM API IMPORT
 on:
   workflow_dispatch:
 
 jobs:
-  call-child:
-    # Job-level 'uses' references the child workflow
+  import-apis:
     uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
     with:
       includeFolders: "SampleAPI, v2"
       fromChild: "true"
-    secrets: inherit   # optional, if child workflow needs repo secrets
+    secrets: inherit

@@ -8,6 +8,6 @@ jobs:
     # Job-level 'uses' references the child workflow
     uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
     with:
-      includeFolders: "SampleAPI,v2"
+      includeFolders: "SampleAPI, v2"
       fromChild: "true"
     secrets: inherit   # optional, if child workflow needs repo secrets

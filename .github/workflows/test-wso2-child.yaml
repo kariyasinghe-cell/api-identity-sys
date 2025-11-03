@@ -6,6 +6,6 @@ jobs:
   deploy-apis:
     uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
     with:
-      includeAPIs: "jhgjhg, dfsdfds, fdsfdsf"
+      includeAPIs: "v1"
       triggeredBy: "developer"
     secrets: inherit

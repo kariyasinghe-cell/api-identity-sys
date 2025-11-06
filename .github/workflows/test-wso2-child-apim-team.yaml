@@ -2,6 +2,10 @@ name: WSO2 APIM API Deploying - APIM Team
 on:
   workflow_dispatch:
     inputs:
+      branch:
+        description: "Branch to run on"
+        required: false
+        default: "main"
       includeAPIs:
         description: 'Comma-separated list of APIM APIs to include (leave empty to include all)'
         required: false

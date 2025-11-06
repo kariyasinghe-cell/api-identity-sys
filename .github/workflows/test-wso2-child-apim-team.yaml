@@ -3,11 +3,11 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Branch to run on"
+        description: "Branch to Deploy APIs"
         required: false
         default: "main"
       includeAPIs:
-        description: 'Comma-separated list of APIs to include(leave empty to include all)'
+        description: 'Comma-separated list of APIs to Deploy(leave empty to include all)'
         required: false
         default: ''
       environment:

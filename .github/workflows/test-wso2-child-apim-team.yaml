@@ -7,11 +7,11 @@ on:
         required: false
         default: "main"
       includeAPIs:
-        description: 'Comma-separated list of APIM APIs to include (leave empty to include all)'
+        description: 'Comma-separated list of APIs to include(leave empty to include all)'
         required: false
         default: ''
       environment:
-        description: 'Select the deployment environment'
+        description: 'Select the Deployment Environment'
         required: true
         type: choice
         options:

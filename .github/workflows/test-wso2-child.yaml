@@ -1,7 +1,20 @@
 name: WSO2 APIM API Deploying - Developer
 on:
   workflow_dispatch:
-
+    inputs:
+      environment:
+        description: 'Select the deployment environment'
+        required: true
+        type: choice
+        options:
+          - 'Development'
+          - 'SIT'
+          - 'SIT-sandbox'
+          - 'UAT-node-1'
+          - 'UAT-node-2'
+          - 'STG-sandbox'
+        default: 'Development'
+  
 jobs:
   deploy-apis:
     uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main

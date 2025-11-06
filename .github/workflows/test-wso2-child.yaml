@@ -3,11 +3,11 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Branch to run on"
+        description: "Branch to Deploy APIs"
         required: false
         default: "main"
       environment:
-        description: 'Select the deployment environment'
+        description: 'Select the Deployment Environment'
         required: true
         type: choice
         options:

@@ -29,5 +29,6 @@ jobs:
     with:
       includeAPIs: ${{ github.event.inputs.includeAPIs }}
       branch: ${{ github.event.inputs.branch }}
+      environment: ${{ github.event.inputs.environment }}
       triggeredBy: "apim-team"
     secrets: inherit

@@ -28,5 +28,6 @@ jobs:
     uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
     with:
       includeAPIs: ${{ github.event.inputs.includeAPIs }}
+      branch: ${{ github.event.inputs.branch }}
       triggeredBy: "apim-team"
     secrets: inherit

@@ -6,6 +6,18 @@ on:
         description: 'Comma-separated list of APIM APIs to include (leave empty to include all)'
         required: false
         default: ''
+      environment:
+        description: 'Select the deployment environment'
+        required: true
+        type: choice
+        options:
+          - 'Development'
+          - 'SIT'
+          - 'SIT-sandbox'
+          - 'UAT-node-1'
+          - 'UAT-node-2'
+          - 'STG-sandbox'
+        default: 'Development'
 
 jobs:
   deploy-apis:

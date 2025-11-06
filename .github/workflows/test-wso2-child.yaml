@@ -2,6 +2,10 @@ name: WSO2 APIM API Deploying - Developer
 on:
   workflow_dispatch:
     inputs:
+      branch:
+        description: "Branch to run on"
+        required: false
+        default: "main"
       environment:
         description: 'Select the deployment environment'
         required: true

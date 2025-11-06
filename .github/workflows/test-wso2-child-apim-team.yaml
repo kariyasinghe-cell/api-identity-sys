@@ -7,7 +7,7 @@ on:
         required: false
         default: "main"
       includeAPIs:
-        description: 'Comma-separated list of APIs to Deploy(leave empty to include all)'
+        description: 'Comma-separated list of APIs to Deploy(leave empty to deploy all)'
         required: false
         default: ''
       environment:

@@ -8,7 +8,7 @@ on:
         default: "main"
       environment:
         description: 'Select the Deployment Environment'
-        required: true
+        required: false
         type: choice
         options:
           - 'Development'

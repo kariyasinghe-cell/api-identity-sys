@@ -15,13 +15,13 @@ on:
         required: false
         type: choice
         options:
-          - 'Development'
+          - 'Dev'
           - 'SIT'
           - 'SIT-sandbox'
           - 'UAT-node-1'
           - 'UAT-node-2'
           - 'STG-sandbox'
-        default: 'Development'
+        default: 'Dev'
 
 jobs:
   deploy-apis:

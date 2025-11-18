@@ -24,7 +24,7 @@ jobs:
     uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
     with:
       branch: ${{ github.event.inputs.branch }}
-      includeAPIs: "v1"
+      includeAPIs: "KavinduAPI_1.0.0_Revision-1.zip"
       triggeredBy: "developer"
       environment: ${{ github.event.inputs.environment }}
     secrets: inherit

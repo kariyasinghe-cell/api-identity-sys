@@ -184,49 +184,58 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          # Get API names from previous step
+      
           API_NAMES="${{ steps.list_apis.outputs.api_names }}"
-
+      
           if [[ -z "$API_NAMES" ]]; then
             echo "No APIs to export. Skipping."
             exit 0
           fi
-
+      
           echo "Exporting APIs: $API_NAMES"
-
+      
           mkdir -p "${GITHUB_WORKSPACE}/dist"
-
-          # Convert CSV to array
+      
           IFS=',' read -r -a API_ARRAY <<< "$API_NAMES"
-
+      
           for API_NAME in "${API_ARRAY[@]}"; do
-            echo "→ Exporting $API_NAME (latest version)..."
-
-            # Attempt simple export
-            if ! apictl export api -n "$API_NAME" -e "${APIM_ENV}" --latest --format YAML -k; then
-              echo "⚠️ Simple export failed for $API_NAME. Attempting to resolve version/provider..."
-
-              # Get version and provider from API table
-              LINE="$(apictl get apis -e "${APIM_ENV}" -k | awk -v n="$API_NAME" 'NR>1 && $2==n {print}')"
-
-              if [[ -n "$LINE" ]]; then
-                VERSION="$(awk '{print $3}' <<< "$LINE")"
-                PROVIDER="$(awk '{print $4}' <<< "$LINE")"
-
-                echo "→ Retrying $API_NAME $VERSION (provider=$PROVIDER)"
-                apictl export api -n "$API_NAME" -v "$VERSION" -r "$PROVIDER" -e "${APIM_ENV}" --format YAML -k || {
-                  echo "❌ Failed to export $API_NAME even with version/provider"
-                }
-              else
-                echo "❌ Could not resolve version/provider for $API_NAME. Skipping."
-              fi
+            echo ""
+            echo "============================================="
+            echo "→ Processing API: $API_NAME"
+            echo "============================================="
+      
+            # Get raw record from APIM
+            RECORD="$(apictl get apis -e "${APIM_ENV}" -k | awk -v n="$API_NAME" 'NR>1 && $2==n')"
+      
+            if [[ -z "$RECORD" ]]; then
+              echo "❌ ERROR: Could not find API $API_NAME in APIM"
+              continue
             fi
+      
+            VERSION="$(awk '{print $3}' <<< "$RECORD")"
+            PROVIDER="$(awk '{print $4}' <<< "$RECORD")"
+      
+            if [[ -z "$VERSION" || -z "$PROVIDER" ]]; then
+              echo "❌ ERROR: Could not extract version/provider for $API_NAME"
+              echo "Record: $RECORD"
+              continue
+            fi
+      
+            echo "→ Resolved version: $VERSION"
+            echo "→ Resolved provider: $PROVIDER"
+      
+            # Export API safely
+            if apictl export api -n "$API_NAME" -v "$VERSION" -r "$PROVIDER" \
+                  -e "${APIM_ENV}" --format YAML -k; then
+              echo "✔ Exported $API_NAME successfully"
+            else
+              echo "❌ Export failed for $API_NAME"
+            fi
+      
           done
-
+      
           echo "Exported API files:"
           ls -la "${GITHUB_WORKSPACE}/dist"
-
      
       - name: Create (or update) GitHub Release and upload assets
         shell: bash

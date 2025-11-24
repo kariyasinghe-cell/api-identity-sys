@@ -130,47 +130,55 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          USER_INPUT_APIS="${{ inputs.includeAPIs }}"
+          echo "Fetching APIs from environment: ${APIM_ENV}"
 
-          echo "User provided APIs: '$USER_INPUT_APIS'"
+          # --- 1. Get ALL APIs available in APIM ---
+          mapfile -t ALL_APIS < <(apictl get apis -e "${APIM_ENV}" -k | awk 'NR>1 && $2 != "" {print $2}')
 
-          # ----------------------------------------
-          # Case 1: User input is NOT empty → use it
-          # ----------------------------------------
-          if [[ -n "$USER_INPUT_APIS" ]]; then
-            echo "Using user-provided API list..."
-            
-            # Normalize & remove spaces
-            CLEAN_APIS=$(echo "$USER_INPUT_APIS" | tr -d '[:space:]')
-
-            # Save output
-            echo "api_names=${CLEAN_APIS}" >> "$GITHUB_OUTPUT"
-
-            echo "Final API list: $CLEAN_APIS"
-            exit 0
-          fi
-
-          # ----------------------------------------
-          # Case 2: User input is empty → get all APIs
-          # ----------------------------------------
-          echo "No user API list provided — fetching ALL APIs from APIM..."
-
-          mapfile -t API_NAMES < <(apictl get apis -e "${APIM_ENV}" -k | awk 'NR>1 && $2 != "" {print $2}')
-
-          if (( ${#API_NAMES[@]} == 0 )); then
-            echo "No APIs found in APIM environment!"
+          if (( ${#ALL_APIS[@]} == 0 )); then
+            echo "❌ No APIs found in APIM."
             echo "api_names=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Discovered APIs:"
-          printf '%s\n' "${API_NAMES[@]}"
+          echo "Available APIs in APIM:"
+          printf '%s\n' "${ALL_APIS[@]}"
 
-          ALL_APIS="$(printf '%s,' "${API_NAMES[@]}" | sed 's/,$//')"
+          # --- 2. Read user input ---
+          USER_INPUT="${{ inputs.includeAPIs }}"
 
-          echo "api_names=${ALL_APIS}" >> "$GITHUB_OUTPUT"
+          VALID_APIS=()
 
-          echo "Final API list: $ALL_APIS"
+          if [[ -z "$USER_INPUT" ]]; then
+            echo "No user input provided → exporting ALL APIs."
+            VALID_APIS=("${ALL_APIS[@]}")
+          else
+            echo "User-provided API list: $USER_INPUT"
+            IFS=',' read -ra USER_APIS <<< "$USER_INPUT"
+
+            # --- 3. Validate each user API ---
+            for api in "${USER_APIS[@]}"; do
+              api_trimmed="$(echo "$api" | xargs)"  # trim spaces
+              if printf '%s\n' "${ALL_APIS[@]}" | grep -Fxq "$api_trimmed"; then
+                VALID_APIS+=("$api_trimmed")
+              else
+                echo "⚠️ Given API is not available in APIM: $api_trimmed"
+              fi
+            done
+
+            if (( ${#VALID_APIS[@]} == 0 )); then
+              echo "❌ None of the user-provided APIs are valid. Exiting."
+              echo "api_names=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "✔ Valid APIs to export:"
+          printf '%s\n' "${VALID_APIS[@]}"
+
+          # Convert array to CSV
+          api_csv="$(printf '%s,' "${VALID_APIS[@]}" | sed 's/,$//')"
+          echo "api_names=${api_csv}" >> "$GITHUB_OUTPUT"
    
       - name: Export APIs
         shell: bash

@@ -44,3 +44,28 @@
           printf '%s\n' "${ZIP_FILES[@]}"
 
           gh release upload "$TAG" "${ZIP_FILES[@]}" --clobber
+
+
+========================== CLEANUP
+
+      - name: Cleanup workspace
+        shell: bash
+        run: |
+          echo "Cleaning up exported APIs and repository files..."
+
+          # 1️⃣ Clean exported API files
+          API_DIST_DIR="${GITHUB_WORKSPACE}/dist"
+          if [ -d "$API_DIST_DIR" ]; then
+            rm -rf "$API_DIST_DIR"/*
+            echo "✔ Cleaned dist/ directory"
+          else
+            echo "⚠️ Directory does not exist: $API_DIST_DIR"
+          fi
+
+          # 2️⃣ Clean the checked-out repository files (excluding GitHub Actions workflow hidden files)
+          REPO_DIR="${GITHUB_WORKSPACE}"
+          echo "Cleaning repository files in $REPO_DIR..."
+          shopt -s extglob
+          rm -rf "$REPO_DIR"/!(".git"|"dist")
+          echo "✔ Repository cleanup completed"
+

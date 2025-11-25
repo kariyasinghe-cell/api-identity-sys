@@ -15,3 +15,32 @@
       echo "Creating release $TAG and uploading assets"
       gh release create "$TAG" "${GITHUB_WORKSPACE}"/dist/* --generate-notes
     fi
+
+
+
+=========================== UPDATED
+
+      - name: Upload exported APIs to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ inputs.version }}"
+          API_DIST_DIR="${GITHUB_WORKSPACE}/dist/apis/Dev"
+
+          if [ ! -d "$API_DIST_DIR" ]; then
+            echo "❌ Directory does not exist: $API_DIST_DIR"
+            exit 1
+          fi
+
+          ZIP_FILES=($(find "$API_DIST_DIR" -maxdepth 1 -type f -name "*.zip"))
+
+          if [ ${#ZIP_FILES[@]} -eq 0 ]; then
+            echo "⚠️ No zip files found to upload in $API_DIST_DIR"
+            exit 0
+          fi
+
+          echo "Uploading the following zip files to release $TAG:"
+          printf '%s\n' "${ZIP_FILES[@]}"
+
+          gh release upload "$TAG" "${ZIP_FILES[@]}" --clobber

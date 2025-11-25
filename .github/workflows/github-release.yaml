@@ -1,0 +1,17 @@
+- name: Create (or update) GitHub Release and upload assets
+  shell: bash
+  run: |
+    set -euo pipefail
+
+    TAG="${{ inputs.version }}"  # <-- FIXED
+
+    echo "Using release tag: $TAG"
+
+    # If a release for this tag already exists, upload assets
+    if gh release view "$TAG" >/dev/null 2>&1; then
+      echo "Release $TAG exists; uploading assets"
+      gh release upload "$TAG" "${GITHUB_WORKSPACE}"/dist/* --clobber
+    else
+      echo "Creating release $TAG and uploading assets"
+      gh release create "$TAG" "${GITHUB_WORKSPACE}"/dist/* --generate-notes
+    fi

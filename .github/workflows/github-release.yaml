@@ -78,3 +78,45 @@
           rm -rf "$REPO_DIR"/!(".git"|"dist")
           echo "✔ Repository cleanup completed"
 
+
+
+=========================
+
+Update release
+
+      - name: Package and upload exported APIs to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ inputs.version }}"
+          API_DIST_DIR="${GITHUB_WORKSPACE}/dist"
+          RELEASE_ZIP="${GITHUB_WORKSPACE}/${TAG}-release-apis.zip"
+
+          if [ ! -d "$API_DIST_DIR" ]; then
+            echo "❌ Directory does not exist: $API_DIST_DIR"
+            exit 1
+          fi
+
+          # Create a single zip file containing all files in dist/
+          echo "Creating zip file: $RELEASE_ZIP"
+          cd "$API_DIST_DIR"
+          zip -r "$RELEASE_ZIP" ./*
+
+          if [ ! -f "$RELEASE_ZIP" ]; then
+            echo "❌ Failed to create zip file."
+            exit 1
+          fi
+
+          echo "Checking if release '$TAG' exists..."
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release '$TAG' not found. Creating a new release..."
+            gh release create "$TAG" --title "$TAG" --notes "Automated release"
+          else
+            echo "Release '$TAG' already exists."
+          fi
+
+          echo "Uploading zip file to release $TAG..."
+          gh release upload "$TAG" "$RELEASE_ZIP" --clobber
+
+          echo "✔ Upload completed: $RELEASE_ZIP"

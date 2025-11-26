@@ -92,3 +92,17 @@
 
           echo "VALIDATION_ERRORS=$VALIDATION_ERRORS" >> $GITHUB_OUTPUT
 
+======================================
+
+
+# Find inner folder (example: ***-1.0.0)
+INNER_DIR=$(find "extracted/$api" -maxdepth 1 -type d ! -path "extracted/$api")
+
+API_YAML="$INNER_DIR/api.yaml"
+
+if [[ ! -f "$API_YAML" ]]; then
+  echo "❌ api.yaml missing inside zip: $api"
+  echo "Checked path: $API_YAML"
+  VALIDATION_ERRORS=$((VALIDATION_ERRORS+1))
+  continue
+fi

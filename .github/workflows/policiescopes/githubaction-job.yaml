@@ -1,0 +1,94 @@
+  validate-api-artifacts:
+    name: Validate API Preconditions
+    runs-on: ubuntu-latest
+    needs:
+      - determine_apis
+    env:
+      DEPLOY_APIS: ${{ needs.determine_apis.outputs.apis-to-deploy }}
+    steps:
+
+      - uses: actions/checkout@v4
+        with:
+          repository: sampathbankplc/middleware-apim-sampathvishwa-app-apis
+          fetch-depth: 5
+          path: repo
+
+      - name: Install yq
+        run: |
+          sudo wget https://github.com/mikefarah/yq/releases/download/v4.35.2/yq_linux_amd64 -O /usr/bin/yq
+          sudo chmod +x /usr/bin/yq
+
+      - name: Validate API ZIPs
+        id: validate_apis
+        working-directory: repo
+        run: |
+          echo "Analyzing APIs: $DEPLOY_APIS"
+          mkdir -p extracted
+
+          VALIDATION_ERRORS=0
+
+          for api in $DEPLOY_APIS; do
+            echo "-------------------------------------------------------"
+            echo "🔍 Validating: $api"
+            echo "-------------------------------------------------------"
+
+            unzip -o "apim/$api" -d "extracted/$api"
+
+            API_YAML="extracted/$api/api.yaml"
+            if [[ ! -f "$API_YAML" ]]; then
+              echo "❌ api.yaml missing in $api"
+              VALIDATION_ERRORS=$((VALIDATION_ERRORS+1))
+              continue
+            fi
+
+            echo "📌 Checking scopes → roles"
+            ROLES=$(yq e '.scopes[].roles // ""' "$API_YAML" | tr ',' '\n' | sort -u)
+            for ROLE in $ROLES; do
+              ROLE=$(echo "$ROLE" | xargs)
+              if [[ -z "$ROLE" ]]; then continue; fi
+              if ! apictl get roles -e Dev -k | grep -qw "$ROLE"; then
+                echo "⚠️ Missing Role: $ROLE"
+              fi
+            done
+
+            echo "📌 Checking policies"
+            POLICIES=$(yq e '.throttlingPolicy, .subscriptionPolicies[], .applicationPolicies[]?' "$API_YAML" | grep -v null || true)
+            for P in $POLICIES; do
+              if ! apictl get policies -e Dev -k | grep -qw "$P"; then
+                echo "⚠️ Missing Policy: $P"
+              fi
+            done
+
+            echo "📌 Checking gateway labels"
+            LABELS=$(yq e '.gatewayLabels[]?' "$API_YAML" || true)
+            for L in $LABELS; do
+              if ! apictl get gateways -e Dev -k | grep -qw "$L"; then
+                echo "⚠️ Missing Gateway Label: $L"
+              fi
+            done
+
+            echo "📌 Checking API categories"
+            CATS=$(yq e '.categories[]?' "$API_YAML" || true)
+            for C in $CATS; do
+              if ! apictl get api-categories -e Dev | grep -qw "$C"; then
+                echo "⚠️ Missing API Category: $C"
+              fi
+            done
+
+            echo "📌 Checking backend certificates"
+            ENDPOINTS=$(yq e '.endpointConfig.*.url?' "$API_YAML" || true)
+            for E in $ENDPOINTS; do
+              HOST=$(echo "$E" | sed -E 's@https?://([^:/]+).*@\1@')
+              if [[ -n "$HOST" ]]; then
+                if ! keytool -printcert -rfc -sslserver "$HOST" > /dev/null 2>&1; then
+                  echo "⚠️ Endpoint certificate not trusted: $HOST"
+                fi
+              fi
+            done
+
+            echo "✔ Completed validation for $api"
+            echo
+          done
+
+          echo "VALIDATION_ERRORS=$VALIDATION_ERRORS" >> $GITHUB_OUTPUT
+

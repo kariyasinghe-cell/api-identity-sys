@@ -24,73 +24,145 @@
         run: |
           echo "Analyzing APIs: $DEPLOY_APIS"
           mkdir -p extracted
-
+          
           VALIDATION_ERRORS=0
-
+          
+          echo "-------------------------------------------------------"
+          echo "📌 Fetching data from APIM"
+          echo "-------------------------------------------------------"
+          
+          APIM_ROLES=$(apictl get roles -e Dev -k | awk '{print $1}' | tail -n +3)
+          APIM_POLICIES=$(apictl get policies -e Dev -k | awk '{print $1}' | tail -n +3)
+          APIM_LABELS=$(apictl get gateways -e Dev -k | awk '{print $1}' | tail -n +3)
+          APIM_CATEGORIES=$(apictl get api-categories -e Dev -k | awk '{print $1}' | tail -n +3)
+          
+          echo "APIM → Roles:"
+          echo "$APIM_ROLES"
+          echo
+          echo "APIM → Policies:"
+          echo "$APIM_POLICIES"
+          echo
+          echo "APIM → Gateway Labels:"
+          echo "$APIM_LABELS"
+          echo
+          echo "APIM → API Categories:"
+          echo "$APIM_CATEGORIES"
+          echo "-------------------------------------------------------"
+          
+          
           for api in $DEPLOY_APIS; do
-            echo "-------------------------------------------------------"
-            echo "🔍 Validating: $api"
-            echo "-------------------------------------------------------"
-
-            unzip -o "apim/$api" -d "extracted/$api"
-
-            API_YAML="extracted/$api/api.yaml"
+            echo
+            echo "======================================================="
+            echo "🔍 Validating ZIP: $api"
+            echo "======================================================="
+          
+            unzip -o "apim/$api" -d "extracted/$api" >/dev/null
+          
+            # Detect inner folder containing api.yaml
+            INNER_DIR=$(find "extracted/$api" -type f -name "api.yaml" -printf '%h')
+            API_YAML="$INNER_DIR/api.yaml"
+          
             if [[ ! -f "$API_YAML" ]]; then
-              echo "❌ api.yaml missing in $api"
+              echo "❌ api.yaml missing inside zip: $api"
               VALIDATION_ERRORS=$((VALIDATION_ERRORS+1))
               continue
             fi
-
-            echo "📌 Checking scopes → roles"
-            ROLES=$(yq e '.scopes[].roles // ""' "$API_YAML" | tr ',' '\n' | sort -u)
-            for ROLE in $ROLES; do
-              ROLE=$(echo "$ROLE" | xargs)
-              if [[ -z "$ROLE" ]]; then continue; fi
-              if ! apictl get roles -e Dev -k | grep -qw "$ROLE"; then
-                echo "⚠️ Missing Role: $ROLE"
-              fi
-            done
-
-            echo "📌 Checking policies"
-            POLICIES=$(yq e '.throttlingPolicy, .subscriptionPolicies[], .applicationPolicies[]?' "$API_YAML" | grep -v null || true)
-            for P in $POLICIES; do
-              if ! apictl get policies -e Dev -k | grep -qw "$P"; then
-                echo "⚠️ Missing Policy: $P"
-              fi
-            done
-
-            echo "📌 Checking gateway labels"
-            LABELS=$(yq e '.gatewayLabels[]?' "$API_YAML" || true)
-            for L in $LABELS; do
-              if ! apictl get gateways -e Dev -k | grep -qw "$L"; then
-                echo "⚠️ Missing Gateway Label: $L"
-              fi
-            done
-
-            echo "📌 Checking API categories"
-            CATS=$(yq e '.categories[]?' "$API_YAML" || true)
-            for C in $CATS; do
-              if ! apictl get api-categories -e Dev | grep -qw "$C"; then
-                echo "⚠️ Missing API Category: $C"
-              fi
-            done
-
-            echo "📌 Checking backend certificates"
-            ENDPOINTS=$(yq e '.endpointConfig.*.url?' "$API_YAML" || true)
-            for E in $ENDPOINTS; do
-              HOST=$(echo "$E" | sed -E 's@https?://([^:/]+).*@\1@')
-              if [[ -n "$HOST" ]]; then
-                if ! keytool -printcert -rfc -sslserver "$HOST" > /dev/null 2>&1; then
-                  echo "⚠️ Endpoint certificate not trusted: $HOST"
-                fi
-              fi
-            done
-
-            echo "✔ Completed validation for $api"
+          
+            echo "📄 Found api.yaml at: $API_YAML"
             echo
+          
+            echo "-------------------------------------------------------"
+            echo "📌 API ZIP → Extracting Info"
+            echo "-------------------------------------------------------"
+          
+            # 1️⃣ Roles from scopes
+            ZIP_ROLES=$(yq e '.scopes[].roles // ""' "$API_YAML" | tr ',' '\n' | xargs -I {} echo {} | sort -u)
+            echo "ZIP → Roles:"
+            echo "${ZIP_ROLES:-None}"
+            echo
+          
+            # 2️⃣ Policies
+            ZIP_POLICIES=$(yq e '.throttlingPolicy, .subscriptionPolicies[], .applicationPolicies[]?' "$API_YAML" | grep -v null || true)
+            echo "ZIP → Policies:"
+            echo "${ZIP_POLICIES:-None}"
+            echo
+          
+            # 3️⃣ Gateway Labels
+            ZIP_LABELS=$(yq e '.gatewayLabels[]?' "$API_YAML" || true)
+            echo "ZIP → Gateway Labels:"
+            echo "${ZIP_LABELS:-None}"
+            echo
+          
+            # 4️⃣ API Categories
+            ZIP_CATEGORIES=$(yq e '.categories[]?' "$API_YAML" || true)
+            echo "ZIP → API Categories:"
+            echo "${ZIP_CATEGORIES:-None}"
+            echo
+          
+            # 5️⃣ Extract endpoints
+            ZIP_ENDPOINTS=$(yq e '.endpointConfig.*.url?' "$API_YAML" || true)
+            echo "ZIP → Endpoints:"
+            echo "${ZIP_ENDPOINTS:-None}"
+            echo
+          
+            echo "-------------------------------------------------------"
+            echo "📌 Comparing: ZIP vs APIM"
+            echo "-------------------------------------------------------"
+          
+            # Compare roles
+            for ROLE in $ZIP_ROLES; do
+              if ! echo "$APIM_ROLES" | grep -qw "$ROLE"; then
+                echo "⚠️ Missing Role in APIM: $ROLE"
+              else
+                echo "✔ Role exists: $ROLE"
+              fi
+            done
+            echo
+          
+            # Compare policies
+            for P in $ZIP_POLICIES; do
+              if ! echo "$APIM_POLICIES" | grep -qw "$P"; then
+                echo "⚠️ Missing Policy in APIM: $P"
+              else
+                echo "✔ Policy exists: $P"
+              fi
+            done
+            echo
+          
+            # Compare labels
+            for L in $ZIP_LABELS; do
+              if ! echo "$APIM_LABELS" | grep -qw "$L"; then
+                echo "⚠️ Missing Gateway Label in APIM: $L"
+              else
+                echo "✔ Gateway Label exists: $L"
+              fi
+            done
+            echo
+          
+            # Compare categories
+            for C in $ZIP_CATEGORIES; do
+              if ! echo "$APIM_CATEGORIES" | grep -qw "$C"; then
+                echo "⚠️ Missing API Category in APIM: $C"
+              else
+                echo "✔ API Category exists: $C"
+              fi
+            done
+            echo
+          
+            # Check Endpoint Certificates
+            for E in $ZIP_ENDPOINTS; do
+              HOST=$(echo "$E" | sed -E 's@https?://([^:/]+).*@\1@')
+              if keytool -printcert -rfc -sslserver "$HOST" >/dev/null 2>&1; then
+                echo "✔ Endpoint cert valid: $HOST"
+              else
+                echo "⚠️ Endpoint cert NOT trusted: $HOST"
+              fi
+            done
+          
           done
-
+          
           echo "VALIDATION_ERRORS=$VALIDATION_ERRORS" >> $GITHUB_OUTPUT
+
 
 ======================================
 

@@ -178,3 +178,23 @@ if [[ ! -f "$API_YAML" ]]; then
   VALIDATION_ERRORS=$((VALIDATION_ERRORS+1))
   continue
 fi
+
+
+=====================================================================
+
+
+- name: Install yq
+  working-directory: ${{ env.WORKSPACE }}
+  run: |
+    WORK_DIR="$RUNNER_WORKSPACE/yq"
+    mkdir -p "$WORK_DIR"
+
+    if [ ! -f "$WORK_DIR/yq" ]; then
+      cd "$WORK_DIR"
+      echo "Downloading yq to $WORK_DIR..."
+      wget "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -O yq
+    fi
+
+    chmod +x "$WORK_DIR/yq"
+    echo "$WORK_DIR" >> $GITHUB_PATH
+    echo "yq path added to PATH: $WORK_DIR"

@@ -1,0 +1,77 @@
+name: Import WSO2 API with Pre-checks
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_zip:
+        description: "Path to API ZIP file"
+        required: true
+        default: "apis/MyAPI.zip"
+      environment:
+        description: "Target APIM environment"
+        required: true
+        default: "dev"
+
+jobs:
+  import-api:
+    runs-on: ubuntu-latest
+
+    env:
+      APICTL_HOME: ${{ github.workspace }}/apictl
+      APICTL_VERSION: "4.6.0"  # change if needed
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+
+    - name: Setup apictl
+      run: |
+        mkdir -p $APICTL_HOME
+        curl -L https://github.com/wso2/product-apim-tooling/releases/download/v$APICTL_VERSION/apictl-$APICTL_VERSION-linux-x64.zip -o apictl.zip
+        unzip apictl.zip -d $APICTL_HOME
+        chmod +x $APICTL_HOME/apictl
+        echo "$APICTL_HOME" >> $GITHUB_PATH
+
+    - name: Extract API YAML from ZIP
+      run: |
+        unzip -o ${{ github.event.inputs.api_zip }} -d temp_api
+        API_YAML="temp_api/api.yaml"
+        if [ ! -f "$API_YAML" ]; then
+          echo "api.yaml not found in ZIP!"
+          exit 1
+        fi
+
+    - name: Pre-check roles
+      run: |
+        echo "Checking roles required by API..."
+        REQUIRED_ROLES=$(yq e '.scopes[].roles // ""' $API_YAML | tr ',' '\n' | sort -u)
+        echo "Roles found in api.yaml: $REQUIRED_ROLES"
+        for ROLE in $REQUIRED_ROLES; do
+          if ! $APICTL_HOME/apictl get roles -e ${{ github.event.inputs.environment }} -k | grep -qw "$ROLE"; then
+            echo "WARNING: Role '$ROLE' does not exist in environment"
+          fi
+        done
+
+    - name: Pre-check policies
+      run: |
+        echo "Checking throttling / subscription policies..."
+        POLICIES=$(yq e '.throttlingPolicy, .subscriptionPolicies[], .applicationPolicies[]?' $API_YAML | sort -u | grep -v null)
+        for P in $POLICIES; do
+          if ! $APICTL_HOME/apictl get policies -e ${{ github.event.inputs.environment }} -k | grep -qw "$P"; then
+            echo "WARNING: Policy '$P' does not exist in environment"
+          fi
+        done
+
+    - name: Pre-check gateway labels
+      run: |
+        LABELS=$(yq e '.gatewayLabels[]?' $API_YAML)
+        for L in $LABELS; do
+          if ! $APICTL_HOME/apictl get gateways -e ${{ github.event.inputs.environment }} -k | grep -qw "$L"; then
+            echo "WARNING: Gateway label '$L' does not exist in environment"
+          fi
+        done
+
+    - name: Import API
+      run: |
+        echo "Importing API..."
+        $APICTL_HOME/apictl import api -f ${{ github.event.inputs.api_zip }} -e ${{ github.event.inputs.environment }} -k --update

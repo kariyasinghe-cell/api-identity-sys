@@ -217,3 +217,110 @@ jobs:
           fi
 
           gh release upload "$TAG" "$ZIP" --clobber
+
+
+================================================= 27/11
+
+
+      - name: Notify Deployment Status
+        run: |
+          set -euo pipefail
+
+          TITLE=""
+          COLOR=""
+          PASSED_JOBS=""
+          FAILED_JOBS=""
+          SKIPPED_JOBS=""
+          OPTIONAL_FAILED_JOBS=""
+
+          EXPORT_APIS="${{ steps.determine_apis.outputs.api_names }}"
+
+          prettify() {
+            sed -E 's/([a-z])([A-Z])/\1 \2/g' <<< "$1"
+          }
+
+          pad_right() {
+            printf "%-30s" "$1"
+          }
+
+          NEEDS_JSON='${{ toJson(needs) }}'
+          TOPIC_STATUS="${{ needs.fetch-repo-topics.outputs.topic_status }}"
+
+          echo "Fetching job results..."
+          for job in $(jq -r 'keys[]' <<< "$NEEDS_JSON"); do
+            RESULT=$(jq -r ".\"$job\".result" <<< "$NEEDS_JSON")
+            JOB_NAME=$(prettify "$job")
+            PADDED_JOB_NAME=$(pad_right "$JOB_NAME")
+
+            if [[ "$job" == "copyright-check" ]]; then
+              COPYRIGHT_FAILED="${{ needs.copyright-check.outputs.copyright_failed }}"
+              if [[ "$COPYRIGHT_FAILED" == "true" ]]; then
+                if [[ "$TOPIC_STATUS" != "new" ]]; then
+                  OPTIONAL_FAILED_JOBS+="- ❌ $PADDED_JOB_NAME\n"
+                  continue
+                fi
+                RESULT="failure"
+              fi
+            elif [[ "$job" == "code-formatting-check" ]]; then
+              FORMATTING_FAILED="${{ needs.code-formatting-check.outputs.formatting_failed }}"
+              if [[ "$FORMATTING_FAILED" == "true" ]]; then
+                if [[ "$TOPIC_STATUS" != "new" ]]; then
+                  OPTIONAL_FAILED_JOBS+="- ❌ $PADDED_JOB_NAME\n"
+                  continue
+                fi
+                RESULT="failure"
+              fi
+            fi
+
+            if [[ "$RESULT" == "success" ]]; then
+              PASSED_JOBS+="- ✅ $PADDED_JOB_NAME\n"
+            elif [[ "$RESULT" == "failure" ]]; then
+              FAILED_JOBS+="- ❌ $PADDED_JOB_NAME\n"
+            else
+              SKIPPED_JOBS+="- ⚠️ $PADDED_JOB_NAME\n"
+            fi
+          done
+
+          # ---------------------------------------------------------
+          #  NEW LOGIC FOR SUCCESS/FAILURE (Requirement #2 and #3)
+          # ---------------------------------------------------------
+          if [[ -z "$FAILED_JOBS" && -z "$SKIPPED_JOBS" ]]; then
+            TITLE="✅ Pre-Release Verification: Success | Release Ready"
+            COLOR="2E8B57"
+          else
+            TITLE="❌ Pre-Release Verification: Failed | Release Blocked"
+            COLOR="B22222"
+          fi
+          # ---------------------------------------------------------
+
+          # Build message facts
+          FACTS="[ \
+            {\"name\":\"📋 Workflow:\", \"value\":\"${{ github.workflow }}\"}, \
+            {\"name\":\"🌿 Branch:\", \"value\":\"${{ github.ref_name }}\"}, \
+            {\"name\":\"🔗 Commit:\", \"value\":\"${{ github.sha }}\"}, \
+            {\"name\":\"👤 Initiated By:\", \"value\":\"${{ github.actor }}\"}, \
+            {\"name\":\"📌 Project Category:\", \"value\":\"$TOPIC_STATUS\"}, \
+            {\"name\":\"📦 APIs To Export:\", \"value\":\"${EXPORT_APIS}\"} \
+          ]"
+
+          # Build Teams card
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            "summary": "$TITLE",
+            "themeColor": "$COLOR",
+            "title": "$TITLE",
+            "sections": [
+              {
+                "activityTitle": "**Repository: ${{ github.repository }}**",
+                "facts": $FACTS
+              }
+            ]
+          }
+          EOF
+          )
+
+          curl -s -f -H 'Content-Type: application/json' \
+            -d "$JSON_PAYLOAD" \
+            "${{ env.TEAMS_WEBHOOK_URL_APIM_EXPORT }}"

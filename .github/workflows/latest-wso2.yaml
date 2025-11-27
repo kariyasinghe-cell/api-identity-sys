@@ -394,3 +394,35 @@ jobs:
           api_csv="$(printf '%s,' "${VALID_APIS[@]}" | sed 's/,$//')"
           echo "api_names=${api_csv}" >> "$GITHUB_OUTPUT"
 
+
+
+#########
+
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+TARGET_DIR="${GITHUB_WORKSPACE}/dist/apis/Dev"
+
+# Get all .zip files
+mapfile -t ZIP_FILES < <(ls -1 "$TARGET_DIR"/*.zip 2>/dev/null)
+
+CLEAN_NAMES=()
+
+for file in "${ZIP_FILES[@]}"; do
+    filename=$(basename "$file")        # eg: MyAPI_1.0.0.zip
+
+    # 1. Remove .zip
+    nozip="${filename%.zip}"            # MyAPI_1.0.0
+
+    # 2. Remove _<version> at the end
+    # Pattern: underscore + numbers + dot + numbers + dot + numbers
+    cleaned=$(echo "$nozip" | sed -E 's/_[0-9]+\.[0-9]+\.[0-9]+$//')
+
+    CLEAN_NAMES+=("$cleaned")
+done
+
+# Print array (optional)
+printf "Cleaned API names:\n"
+printf '%s\n' "${CLEAN_NAMES[@]}"
+

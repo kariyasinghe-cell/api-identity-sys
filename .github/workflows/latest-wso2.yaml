@@ -234,6 +234,7 @@ jobs:
           OPTIONAL_FAILED_JOBS=""
 
           EXPORT_APIS="${{ steps.determine_apis.outputs.api_names }}"
+          EXPORT_ERROR="${{ steps.determine_apis.outputs.error_reason }}"
 
           prettify() {
             sed -E 's/([a-z])([A-Z])/\1 \2/g' <<< "$1"
@@ -282,16 +283,15 @@ jobs:
           done
 
           # ---------------------------------------------------------
-          #  NEW LOGIC FOR SUCCESS/FAILURE (Requirement #2 and #3)
+          #  Determine overall status
           # ---------------------------------------------------------
-          if [[ -z "$FAILED_JOBS" && -z "$SKIPPED_JOBS" ]]; then
+          if [[ -z "$FAILED_JOBS" && -z "$SKIPPED_JOBS" && -z "$EXPORT_ERROR" ]]; then
             TITLE="✅ Pre-Release Verification: Success | Release Ready"
             COLOR="2E8B57"
           else
             TITLE="❌ Pre-Release Verification: Failed | Release Blocked"
             COLOR="B22222"
           fi
-          # ---------------------------------------------------------
 
           # Build message facts
           FACTS="[ \
@@ -303,7 +303,11 @@ jobs:
             {\"name\":\"📦 APIs To Export:\", \"value\":\"${EXPORT_APIS}\"} \
           ]"
 
-          # Build Teams card
+          # Include error reason if exists
+          if [[ -n "$EXPORT_ERROR" ]]; then
+            FACTS+=", {\"name\":\"❌ API Validation Error\", \"value\":\"$(echo "$EXPORT_ERROR" | sed 's/"/\\"/g')\"}"
+          fi
+
           JSON_PAYLOAD=$(cat <<EOF
           {
             "@type": "MessageCard",
@@ -324,3 +328,69 @@ jobs:
           curl -s -f -H 'Content-Type: application/json' \
             -d "$JSON_PAYLOAD" \
             "${{ env.TEAMS_WEBHOOK_URL_APIM_EXPORT }}"
+
+
+=================================
+
+
+      - name: Determine APIs to export from API Manager
+        id: determine_apis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "Fetching APIs from environment: ${APIM_ENV}"
+
+          # --- 1. Get ALL APIs available in APIM ---
+          mapfile -t ALL_APIS < <(apictl get apis -e "${APIM_ENV}" -k | awk 'NR>1 && $2 != "" {print $2}')
+
+          if (( ${#ALL_APIS[@]} == 0 )); then
+            REASON="❌ No APIs found in APIM for environment: ${APIM_ENV}"
+            echo "$REASON"
+            echo "api_names=" >> "$GITHUB_OUTPUT"
+            echo "error_reason=$REASON" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "Available APIs in APIM:"
+          # printf '%s\n' "${ALL_APIS[@]}"
+
+          # --- 2. Read user input ---
+          USER_INPUT="${{ inputs.includeAPIs }}"
+          VALID_APIS=()
+
+          if [[ -z "$USER_INPUT" ]]; then
+            echo "No user input provided → exporting ALL APIs."
+            VALID_APIS=("${ALL_APIS[@]}")
+          else
+            echo "User-provided API list: $USER_INPUT"
+            IFS=',' read -ra USER_APIS <<< "$USER_INPUT"
+
+            # --- 3. Validate each user API ---
+            INVALID_APIS=()
+            for api in "${USER_APIS[@]}"; do
+              api_trimmed="$(echo "$api" | xargs)"  # trim spaces
+              if printf '%s\n' "${ALL_APIS[@]}" | grep -Fxq "$api_trimmed"; then
+                VALID_APIS+=("$api_trimmed")
+              else
+                INVALID_APIS+=("$api_trimmed")
+                echo "⚠️ Given API is not available in APIM: $api_trimmed"
+              fi
+            done
+
+            if (( ${#VALID_APIS[@]} == 0 )); then
+              REASON="❌ None of the user-provided APIs are valid: ${INVALID_APIS[*]}"
+              echo "$REASON"
+              echo "api_names=" >> "$GITHUB_OUTPUT"
+              echo "error_reason=$REASON" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          echo "✔ Valid APIs to export:"
+          printf '%s\n' "${VALID_APIS[@]}"
+
+          # Convert array to CSV
+          api_csv="$(printf '%s,' "${VALID_APIS[@]}" | sed 's/,$//')"
+          echo "api_names=${api_csv}" >> "$GITHUB_OUTPUT"
+

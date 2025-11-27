@@ -223,55 +223,45 @@ jobs:
 
 
       - name: Notify Deployment Status
+        shell: bash
         run: |
           set -euo pipefail
 
-          TITLE=""
-          COLOR=""
+          # -------------------------------
+          # Read API export info
+          # -------------------------------
+          EXPORT_APIS="${{ steps.determine_apis.outputs.api_names }}"
+          EXPORT_ERROR="${{ steps.determine_apis.outputs.error_reason }}"
+          DETERMINE_APIS_CONCLUSION="${{ steps.determine_apis.conclusion }}"
+
+          # -------------------------------
+          # Determine overall status
+          # -------------------------------
+          if [[ "$DETERMINE_APIS_CONCLUSION" == "failure" || -n "$EXPORT_ERROR" ]]; then
+            TITLE="❌ Pre-Release Verification: Failed | Release Blocked"
+            COLOR="B22222"
+          else
+            TITLE="✅ Pre-Release Verification: Success | Release Ready"
+            COLOR="2E8B57"
+          fi
+
+          # -------------------------------
+          # Collect job results (if any) safely
+          # -------------------------------
+          NEEDS_JSON='${{ toJson(needs) }}'
+          if [[ -z "$NEEDS_JSON" || "$NEEDS_JSON" == "null" ]]; then
+            NEEDS_JSON="{}"
+          fi
+
           PASSED_JOBS=""
           FAILED_JOBS=""
           SKIPPED_JOBS=""
           OPTIONAL_FAILED_JOBS=""
 
-          EXPORT_APIS="${{ steps.determine_apis.outputs.api_names }}"
-          EXPORT_ERROR="${{ steps.determine_apis.outputs.error_reason }}"
-
-          prettify() {
-            sed -E 's/([a-z])([A-Z])/\1 \2/g' <<< "$1"
-          }
-
-          pad_right() {
-            printf "%-30s" "$1"
-          }
-
-          NEEDS_JSON='${{ toJson(needs) }}'
-          TOPIC_STATUS="${{ needs.fetch-repo-topics.outputs.topic_status }}"
-
-          echo "Fetching job results..."
-          for job in $(jq -r 'keys[]' <<< "$NEEDS_JSON"); do
+          for job in $(jq -r 'keys[]' <<< "$NEEDS_JSON" 2>/dev/null || echo ""); do
             RESULT=$(jq -r ".\"$job\".result" <<< "$NEEDS_JSON")
-            JOB_NAME=$(prettify "$job")
-            PADDED_JOB_NAME=$(pad_right "$JOB_NAME")
-
-            if [[ "$job" == "copyright-check" ]]; then
-              COPYRIGHT_FAILED="${{ needs.copyright-check.outputs.copyright_failed }}"
-              if [[ "$COPYRIGHT_FAILED" == "true" ]]; then
-                if [[ "$TOPIC_STATUS" != "new" ]]; then
-                  OPTIONAL_FAILED_JOBS+="- ❌ $PADDED_JOB_NAME\n"
-                  continue
-                fi
-                RESULT="failure"
-              fi
-            elif [[ "$job" == "code-formatting-check" ]]; then
-              FORMATTING_FAILED="${{ needs.code-formatting-check.outputs.formatting_failed }}"
-              if [[ "$FORMATTING_FAILED" == "true" ]]; then
-                if [[ "$TOPIC_STATUS" != "new" ]]; then
-                  OPTIONAL_FAILED_JOBS+="- ❌ $PADDED_JOB_NAME\n"
-                  continue
-                fi
-                RESULT="failure"
-              fi
-            fi
+            JOB_NAME=$(echo "$job" | sed -E 's/([a-z])([A-Z])/\1 \2/g')
+            PADDED_JOB_NAME=$(printf "%-30s" "$JOB_NAME")
 
             if [[ "$RESULT" == "success" ]]; then
               PASSED_JOBS+="- ✅ $PADDED_JOB_NAME\n"
@@ -282,32 +272,37 @@ jobs:
             fi
           done
 
-          # ---------------------------------------------------------
-          #  Determine overall status
-          # ---------------------------------------------------------
-          if [[ -z "$FAILED_JOBS" && -z "$SKIPPED_JOBS" && -z "$EXPORT_ERROR" ]]; then
-            TITLE="✅ Pre-Release Verification: Success | Release Ready"
-            COLOR="2E8B57"
-          else
-            TITLE="❌ Pre-Release Verification: Failed | Release Blocked"
-            COLOR="B22222"
-          fi
-
-          # Build message facts
+          # -------------------------------
+          # Build Teams message facts
+          # -------------------------------
           FACTS="[ \
             {\"name\":\"📋 Workflow:\", \"value\":\"${{ github.workflow }}\"}, \
             {\"name\":\"🌿 Branch:\", \"value\":\"${{ github.ref_name }}\"}, \
             {\"name\":\"🔗 Commit:\", \"value\":\"${{ github.sha }}\"}, \
             {\"name\":\"👤 Initiated By:\", \"value\":\"${{ github.actor }}\"}, \
-            {\"name\":\"📌 Project Category:\", \"value\":\"$TOPIC_STATUS\"}, \
             {\"name\":\"📦 APIs To Export:\", \"value\":\"${EXPORT_APIS}\"} \
           ]"
 
-          # Include error reason if exists
           if [[ -n "$EXPORT_ERROR" ]]; then
             FACTS+=", {\"name\":\"❌ API Validation Error\", \"value\":\"$(echo "$EXPORT_ERROR" | sed 's/"/\\"/g')\"}"
           fi
 
+          if [[ -n "$PASSED_JOBS" ]]; then
+            FACTS+=", {\"name\":\"✅ Passed Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$PASSED_JOBS" | sed 's/"/\\"/g')\"}"
+          fi
+          if [[ -n "$FAILED_JOBS" ]]; then
+            FACTS+=", {\"name\":\"❌ Failed Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$FAILED_JOBS" | sed 's/"/\\"/g')\"}"
+          fi
+          if [[ -n "$SKIPPED_JOBS" ]]; then
+            FACTS+=", {\"name\":\"⚠️ Skipped Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$SKIPPED_JOBS" | sed 's/"/\\"/g')\"}"
+          fi
+          if [[ -n "$OPTIONAL_FAILED_JOBS" ]]; then
+            FACTS+=", {\"name\":\"❌ Failed (Optional)\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$OPTIONAL_FAILED_JOBS" | sed 's/"/\\"/g')\"}"
+          fi
+
+          # -------------------------------
+          # Build Teams JSON payload
+          # -------------------------------
           JSON_PAYLOAD=$(cat <<EOF
           {
             "@type": "MessageCard",
@@ -325,9 +320,13 @@ jobs:
           EOF
           )
 
+          # -------------------------------
+          # Send Teams notification
+          # -------------------------------
           curl -s -f -H 'Content-Type: application/json' \
             -d "$JSON_PAYLOAD" \
             "${{ env.TEAMS_WEBHOOK_URL_APIM_EXPORT }}"
+
 
 
 =================================

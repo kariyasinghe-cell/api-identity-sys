@@ -1,0 +1,122 @@
+- name: Create (or update) GitHub Release and upload assets
+  shell: bash
+  run: |
+    set -euo pipefail
+
+    TAG="${{ inputs.version }}"  # <-- FIXED
+
+    echo "Using release tag: $TAG"
+
+    # If a release for this tag already exists, upload assets
+    if gh release view "$TAG" >/dev/null 2>&1; then
+      echo "Release $TAG exists; uploading assets"
+      gh release upload "$TAG" "${GITHUB_WORKSPACE}"/dist/* --clobber
+    else
+      echo "Creating release $TAG and uploading assets"
+      gh release create "$TAG" "${GITHUB_WORKSPACE}"/dist/* --generate-notes
+    fi
+
+
+
+=========================== UPDATED
+
+      - name: Upload exported APIs to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ inputs.version }}"
+          API_DIST_DIR="${GITHUB_WORKSPACE}/dist/apis/Dev"
+
+          if [ ! -d "$API_DIST_DIR" ]; then
+            echo "❌ Directory does not exist: $API_DIST_DIR"
+            exit 1
+          fi
+
+          ZIP_FILES=($(find "$API_DIST_DIR" -maxdepth 1 -type f -name "*.zip"))
+
+          if [ ${#ZIP_FILES[@]} -eq 0 ]; then
+            echo "⚠️ No zip files found to upload in $API_DIST_DIR"
+            exit 0
+          fi
+
+          echo "Checking if release '$TAG' exists..."
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release '$TAG' not found. Creating a new release..."
+            gh release create "$TAG" --title "$TAG" --notes "Automated release"
+          else
+            echo "Release '$TAG' already exists."
+          fi
+
+          echo "Uploading the following zip files to release $TAG:"
+          printf '%s\n' "${ZIP_FILES[@]}"
+
+          gh release upload "$TAG" "${ZIP_FILES[@]}" --clobber
+
+
+
+========================== CLEANUP
+
+      - name: Cleanup workspace
+        shell: bash
+        run: |
+          echo "Cleaning up exported APIs and repository files..."
+
+          # 1️⃣ Clean exported API files
+          API_DIST_DIR="${GITHUB_WORKSPACE}/dist"
+          if [ -d "$API_DIST_DIR" ]; then
+            rm -rf "$API_DIST_DIR"/*
+            echo "✔ Cleaned dist/ directory"
+          else
+            echo "⚠️ Directory does not exist: $API_DIST_DIR"
+          fi
+
+          # 2️⃣ Clean the checked-out repository files (excluding GitHub Actions workflow hidden files)
+          REPO_DIR="${GITHUB_WORKSPACE}"
+          echo "Cleaning repository files in $REPO_DIR..."
+          shopt -s extglob
+          rm -rf "$REPO_DIR"/!(".git"|"dist")
+          echo "✔ Repository cleanup completed"
+
+
+
+=========================
+
+Update release
+
+      - name: Package and upload exported APIs to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ inputs.version }}"
+          API_DIST_DIR="${GITHUB_WORKSPACE}/dist"
+          RELEASE_ZIP="${GITHUB_WORKSPACE}/${TAG}-release-apis.zip"
+
+          if [ ! -d "$API_DIST_DIR" ]; then
+            echo "❌ Directory does not exist: $API_DIST_DIR"
+            exit 1
+          fi
+
+          # Create a single zip file containing all files in dist/
+          echo "Creating zip file: $RELEASE_ZIP"
+          cd "$API_DIST_DIR"
+          zip -r "$RELEASE_ZIP" ./*
+
+          if [ ! -f "$RELEASE_ZIP" ]; then
+            echo "❌ Failed to create zip file."
+            exit 1
+          fi
+
+          echo "Checking if release '$TAG' exists..."
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release '$TAG' not found. Creating a new release..."
+            gh release create "$TAG" --title "$TAG" --notes "Automated release"
+          else
+            echo "Release '$TAG' already exists."
+          fi
+
+          echo "Uploading zip file to release $TAG..."
+          gh release upload "$TAG" "$RELEASE_ZIP" --clobber
+
+          echo "✔ Upload completed: $RELEASE_ZIP"

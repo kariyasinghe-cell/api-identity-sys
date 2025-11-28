@@ -1,0 +1,559 @@
+name: Export WSO2 APIs to GitHub Release
+
+on:
+  workflow_call:
+    inputs:
+      includeAPIs:
+        description: "Comma-separated list of APIM APIs to include"
+        required: true
+        type: string
+      environment:
+        description: "Environment name configured in APIM"
+        required: true
+        type: string
+      version:
+        description: "Release version tag"
+        required: true
+        type: string
+
+jobs:
+
+  # ============================
+  # 1. Install required tooling
+  # ============================
+  setup-tools:
+    runs-on: [self-hosted, linux]
+    outputs:
+      apictl-path: ${{ steps.locate-apictl.outputs.apictl_path }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install apictl
+        id: locate-apictl
+        run: |
+          WORK_DIR="$RUNNER_WORKSPACE/apictl-4.1.6"
+          mkdir -p "$WORK_DIR"
+
+          if [ ! -f "$WORK_DIR/apictl/apictl" ]; then
+            cd "$WORK_DIR"
+            wget "https://github.com/wso2/product-apim-tooling/releases/download/v4.1.6/apictl-4.1.6-linux-amd64.tar.gz"
+            tar -xzf apictl-4.1.6-linux-amd64.tar.gz
+          fi
+
+          chmod +x "$WORK_DIR/apictl/apictl"
+          echo "$WORK_DIR/apictl" >> $GITHUB_PATH
+          echo "apictl_path=$WORK_DIR/apictl" >> $GITHUB_OUTPUT
+
+      - name: Install GitHub CLI
+        run: |
+          INSTALL_DIR="${RUNNER_WORKSPACE}/gh-cli"
+          mkdir -p "$INSTALL_DIR"
+          curl -sSL https://github.com/cli/cli/releases/download/v2.79.0/gh_2.79.0_linux_amd64.tar.gz -o gh.tar.gz
+          tar -xzf gh.tar.gz -C "$INSTALL_DIR" --strip-components=1
+          echo "$INSTALL_DIR/bin" >> $GITHUB_PATH
+
+      - name: Verify GH CLI
+        run: gh --version
+
+  # =======================================
+  # 2. Add APIM environment + login
+  # =======================================
+  apim-login:
+    runs-on: [self-hosted, linux]
+    needs: setup-tools
+    env:
+      APIM_ENV: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Environment
+        run: |
+          case "${{ inputs.environment }}" in
+            "Dev") APIM_ENV_URL=${{ secrets.APIM_ENV_URL_DEV }} ;;
+            "SIT") APIM_ENV_URL=${{ secrets.APIM_ENV_URL_SIT }} ;;
+            "SIT-sandbox") APIM_ENV_URL=${{ secrets.APIM_ENV_URL_SIT_SANDBOX }} ;;
+            "UAT-node-1") APIM_ENV_URL=${{ secrets.APIM_ENV_URL_UAT_NODE_1 }} ;;
+            "UAT-node-2") APIM_ENV_URL=${{ secrets.APIM_ENV_URL_UAT_NODE_2 }} ;;
+            "STG-sandbox") APIM_ENV_URL=${{ secrets.APIM_ENV_URL_STG_SANDBOX }} ;;
+            *) echo "Unknown environment"; exit 1 ;;
+          esac
+
+          if apictl get envs | grep -q "${APIM_ENV}"; then
+            echo "Environment already exists."
+          else
+            apictl add env "$APIM_ENV" --apim https://$APIM_ENV_URL
+          fi
+
+      - name: Login to APIM
+        run: |
+          apictl set --http-request-timeout 300000
+
+          case "${{ inputs.environment }}" in
+            "Dev") APIM_USERNAME=${{ secrets.APIM_USERNAME_DEV }} ; APIM_PASSWORD=${{ secrets.APIM_PASSWORD_DEV }} ;;
+            "SIT") APIM_USERNAME=${{ secrets.APIM_USERNAME_SIT }} ; APIM_PASSWORD=${{ secrets.APIM_PASSWORD_SIT }} ;;
+            "SIT-sandbox") APIM_USERNAME=${{ secrets.APIM_USERNAME_SIT_SANDBOX }} ; APIM_PASSWORD=${{ secrets.APIM_PASSWORD_SIT_SANDBOX }} ;;
+            "UAT-node-1") APIM_USERNAME=${{ secrets.APIM_USERNAME_UAT_NODE_1 }} ; APIM_PASSWORD=${{ secrets.APIM_PASSWORD_UAT_NODE_1 }} ;;
+            "UAT-node-2") APIM_USERNAME=${{ secrets.APIM_USERNAME_UAT_NODE_2 }} ; APIM_PASSWORD=${{ secrets.APIM_PASSWORD_UAT_NODE_2 }} ;;
+            "STG-sandbox") APIM_USERNAME=${{ secrets.APIM_USERNAME_STG_SANDBOX }} ; APIM_PASSWORD=${{ secrets.APIM_PASSWORD_STG_SANDBOX }} ;;
+          esac
+
+          apictl login "$APIM_ENV" -u "$APIM_USERNAME" -p "$APIM_PASSWORD" -k
+
+  # =====================================
+  # 3. Determine API list to export
+  # =====================================
+  determine-apis:
+    runs-on: [self-hosted, linux]
+    needs: apim-login
+    outputs:
+      api-names: ${{ steps.determine.outputs.api_names }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: determine
+        run: |
+          set -euo pipefail
+          APIM_ENV="${{ inputs.environment }}"
+
+          mapfile -t ALL_APIS < <(apictl get apis -e "$APIM_ENV" -k | awk 'NR>1 {print $2}')
+          USER_INPUT="${{ inputs.includeAPIs }}"
+          VALID_APIS=()
+
+          if [[ -z "$USER_INPUT" ]]; then
+            VALID_APIS=("${ALL_APIS[@]}")
+          else
+            IFS=',' read -ra USER_APIS <<< "$USER_INPUT"
+            for api in "${USER_APIS[@]}"; do
+              api_trimmed="$(echo "$api" | xargs)"
+              if printf '%s\n' "${ALL_APIS[@]}" | grep -Fxq "$api_trimmed"; then
+                VALID_APIS+=("$api_trimmed")
+              else
+                echo "Invalid API: $api_trimmed"
+              fi
+            done
+          fi
+
+          api_csv="$(printf '%s,' "${VALID_APIS[@]}" | sed 's/,$//')"
+          echo "api_names=$api_csv" >> $GITHUB_OUTPUT
+
+      - name: Save API list
+        run: echo "${{ steps.determine.outputs.api_names }}" > api_list.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-list
+          path: api_list.txt
+
+  # =====================================
+  # 4. Export API artifacts
+  # =====================================
+  export-apis:
+    runs-on: [self-hosted, linux]
+    needs: determine-apis
+    env:
+      APIM_ENV: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: api-list
+
+      - name: Export APIs
+        run: |
+          mkdir -p dist
+          API_NAMES=$(cat api_list.txt)
+
+          IFS=',' read -ra API_ARRAY <<< "$API_NAMES"
+
+          for API_NAME in "${API_ARRAY[@]}"; do
+            RECORD="$(apictl get apis -e "$APIM_ENV" -k | awk -v n="$API_NAME" 'NR>1 && $2==n')"
+            VERSION="$(awk '{print $3}' <<< "$RECORD")"
+            PROVIDER="$(awk '{print $6}' <<< "$RECORD")"
+
+            apictl export api -n "$API_NAME" -v "$VERSION" -r "$PROVIDER" \
+              -e "$APIM_ENV" --format YAML -k
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+  # =====================================
+  # 5. Release packaging & upload
+  # =====================================
+  release:
+    runs-on: [self-hosted, linux]
+    needs: export-apis
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Package Release
+        run: |
+          TAG="${{ inputs.version }}"
+          ZIP="${TAG}-release-apis.zip"
+          cd dist
+          zip -r "../$ZIP" .
+
+      - name: Upload to Release
+        run: |
+          TAG="${{ inputs.version }}"
+          ZIP="${TAG}-release-apis.zip"
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --notes "Automated release"
+          fi
+
+          gh release upload "$TAG" "$ZIP" --clobber
+
+
+================================================= 27/11
+
+
+      - name: Notify Deployment Status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # -------------------------------
+          # Read API export info
+          # -------------------------------
+          EXPORT_APIS="${{ steps.determine_apis.outputs.api_names }}"
+          EXPORT_ERROR="${{ steps.determine_apis.outputs.error_reason }}"
+          DETERMINE_APIS_CONCLUSION="${{ steps.determine_apis.conclusion }}"
+
+          # -------------------------------
+          # Determine overall status
+          # -------------------------------
+          if [[ "$DETERMINE_APIS_CONCLUSION" == "failure" || -n "$EXPORT_ERROR" ]]; then
+            TITLE="❌ Pre-Release Verification: Failed | Release Blocked"
+            COLOR="B22222"
+          else
+            TITLE="✅ Pre-Release Verification: Success | Release Ready"
+            COLOR="2E8B57"
+          fi
+
+          # -------------------------------
+          # Collect job results (if any) safely
+          # -------------------------------
+          NEEDS_JSON='${{ toJson(needs) }}'
+          if [[ -z "$NEEDS_JSON" || "$NEEDS_JSON" == "null" ]]; then
+            NEEDS_JSON="{}"
+          fi
+
+          PASSED_JOBS=""
+          FAILED_JOBS=""
+          SKIPPED_JOBS=""
+          OPTIONAL_FAILED_JOBS=""
+
+          for job in $(jq -r 'keys[]' <<< "$NEEDS_JSON" 2>/dev/null || echo ""); do
+            RESULT=$(jq -r ".\"$job\".result" <<< "$NEEDS_JSON")
+            JOB_NAME=$(echo "$job" | sed -E 's/([a-z])([A-Z])/\1 \2/g')
+            PADDED_JOB_NAME=$(printf "%-30s" "$JOB_NAME")
+
+            if [[ "$RESULT" == "success" ]]; then
+              PASSED_JOBS+="- ✅ $PADDED_JOB_NAME\n"
+            elif [[ "$RESULT" == "failure" ]]; then
+              FAILED_JOBS+="- ❌ $PADDED_JOB_NAME\n"
+            else
+              SKIPPED_JOBS+="- ⚠️ $PADDED_JOB_NAME\n"
+            fi
+          done
+
+          # -------------------------------
+          # Build Teams message facts
+          # -------------------------------
+          FACTS="[ \
+            {\"name\":\"📋 Workflow:\", \"value\":\"${{ github.workflow }}\"}, \
+            {\"name\":\"🌿 Branch:\", \"value\":\"${{ github.ref_name }}\"}, \
+            {\"name\":\"🔗 Commit:\", \"value\":\"${{ github.sha }}\"}, \
+            {\"name\":\"👤 Initiated By:\", \"value\":\"${{ github.actor }}\"}, \
+            {\"name\":\"📦 APIs To Export:\", \"value\":\"${EXPORT_APIS}\"} \
+          ]"
+
+          if [[ -n "$EXPORT_ERROR" ]]; then
+            FACTS+=", {\"name\":\"❌ API Validation Error\", \"value\":\"$(echo "$EXPORT_ERROR" | sed 's/"/\\"/g')\"}"
+          fi
+
+          if [[ -n "$PASSED_JOBS" ]]; then
+            FACTS+=", {\"name\":\"✅ Passed Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$PASSED_JOBS" | sed 's/"/\\"/g')\"}"
+          fi
+          if [[ -n "$FAILED_JOBS" ]]; then
+            FACTS+=", {\"name\":\"❌ Failed Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$FAILED_JOBS" | sed 's/"/\\"/g')\"}"
+          fi
+          if [[ -n "$SKIPPED_JOBS" ]]; then
+            FACTS+=", {\"name\":\"⚠️ Skipped Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$SKIPPED_JOBS" | sed 's/"/\\"/g')\"}"
+          fi
+          if [[ -n "$OPTIONAL_FAILED_JOBS" ]]; then
+            FACTS+=", {\"name\":\"❌ Failed (Optional)\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$OPTIONAL_FAILED_JOBS" | sed 's/"/\\"/g')\"}"
+          fi
+
+          # -------------------------------
+          # Build Teams JSON payload
+          # -------------------------------
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            "summary": "$TITLE",
+            "themeColor": "$COLOR",
+            "title": "$TITLE",
+            "sections": [
+              {
+                "activityTitle": "**Repository: ${{ github.repository }}**",
+                "facts": $FACTS
+              }
+            ]
+          }
+          EOF
+          )
+
+          # -------------------------------
+          # Send Teams notification
+          # -------------------------------
+          curl -s -f -H 'Content-Type: application/json' \
+            -d "$JSON_PAYLOAD" \
+            "${{ env.TEAMS_WEBHOOK_URL_APIM_EXPORT }}"
+
+
+
+=================================
+
+
+      - name: Determine APIs to export from API Manager
+        id: determine_apis
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "Fetching APIs from environment: ${APIM_ENV}"
+
+          # --- 1. Get ALL APIs available in APIM ---
+          mapfile -t ALL_APIS < <(apictl get apis -e "${APIM_ENV}" -k | awk 'NR>1 && $2 != "" {print $2}')
+
+          if (( ${#ALL_APIS[@]} == 0 )); then
+            REASON="❌ No APIs found in APIM for environment: ${APIM_ENV}"
+            echo "$REASON"
+            echo "api_names=" >> "$GITHUB_OUTPUT"
+            echo "error_reason=$REASON" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "Available APIs in APIM:"
+          # printf '%s\n' "${ALL_APIS[@]}"
+
+          # --- 2. Read user input ---
+          USER_INPUT="${{ inputs.includeAPIs }}"
+          VALID_APIS=()
+
+          if [[ -z "$USER_INPUT" ]]; then
+            echo "No user input provided → exporting ALL APIs."
+            VALID_APIS=("${ALL_APIS[@]}")
+          else
+            echo "User-provided API list: $USER_INPUT"
+            IFS=',' read -ra USER_APIS <<< "$USER_INPUT"
+
+            # --- 3. Validate each user API ---
+            INVALID_APIS=()
+            for api in "${USER_APIS[@]}"; do
+              api_trimmed="$(echo "$api" | xargs)"  # trim spaces
+              if printf '%s\n' "${ALL_APIS[@]}" | grep -Fxq "$api_trimmed"; then
+                VALID_APIS+=("$api_trimmed")
+              else
+                INVALID_APIS+=("$api_trimmed")
+                echo "⚠️ Given API is not available in APIM: $api_trimmed"
+              fi
+            done
+
+            if (( ${#VALID_APIS[@]} == 0 )); then
+              REASON="❌ None of the user-provided APIs are valid: ${INVALID_APIS[*]}"
+              echo "$REASON"
+              echo "api_names=" >> "$GITHUB_OUTPUT"
+              echo "error_reason=$REASON" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          fi
+
+          echo "✔ Valid APIs to export:"
+          printf '%s\n' "${VALID_APIS[@]}"
+
+          # Convert array to CSV
+          api_csv="$(printf '%s,' "${VALID_APIS[@]}" | sed 's/,$//')"
+          echo "api_names=${api_csv}" >> "$GITHUB_OUTPUT"
+
+
+
+#########
+
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+TARGET_DIR="${GITHUB_WORKSPACE}/dist/apis/Dev"
+
+# Get all .zip files
+mapfile -t ZIP_FILES < <(ls -1 "$TARGET_DIR"/*.zip 2>/dev/null)
+
+CLEAN_NAMES=()
+
+for file in "${ZIP_FILES[@]}"; do
+    filename=$(basename "$file")        # eg: MyAPI_1.0.0.zip
+
+    # 1. Remove .zip
+    nozip="${filename%.zip}"            # MyAPI_1.0.0
+
+    # 2. Remove _<version> at the end
+    # Pattern: underscore + numbers + dot + numbers + dot + numbers
+    cleaned=$(echo "$nozip" | sed -E 's/_[0-9]+\.[0-9]+\.[0-9]+$//')
+
+    CLEAN_NAMES+=("$cleaned")
+done
+
+# Print array (optional)
+printf "Cleaned API names:\n"
+printf '%s\n' "${CLEAN_NAMES[@]}"
+
+###########################28/11
+
+
+      - name: Notify Release Status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPORT_APIS="${{ steps.determine_apis.outputs.api_names }}"
+          EXPORT_ERROR="${{ steps.determine_apis.outputs.error_reason }}"
+          DETERMINE_APIS_CONCLUSION="${{ steps.determine_apis.conclusion }}"
+
+          # -----------------------------------------------------
+          # Title & Color
+          # -----------------------------------------------------
+          if [[ "$DETERMINE_APIS_CONCLUSION" == "failure" || -n "$EXPORT_ERROR" ]]; then
+            TITLE="❌ Pre-Release Verification: Failed | Release Blocked"
+            COLOR="B22222"
+          else
+            TITLE="✅ Pre-Release Verification: Success | Release Ready"
+            COLOR="2E8B57"
+          fi
+
+          # -----------------------------------------------------
+          # Collect job results from needs
+          # -----------------------------------------------------
+          NEEDS_JSON='${{ toJson(needs) }}'
+          [[ -z "$NEEDS_JSON" || "$NEEDS_JSON" == "null" ]] && NEEDS_JSON="{}"
+
+          PASSED_JOBS=""
+          FAILED_JOBS=""
+          SKIPPED_JOBS=""
+
+          for job in $(jq -r 'keys[]' <<< "$NEEDS_JSON" 2>/dev/null || echo ""); do
+            RESULT=$(jq -r ".\"$job\".result" <<< "$NEEDS_JSON")
+            JOB_NAME=$(echo "$job" | sed -E 's/([a-z])([A-Z])/\1 \2/g')
+
+            case "$RESULT" in
+              success) PASSED_JOBS+="- **$JOB_NAME**\n" ;;
+              failure) FAILED_JOBS+="- **$JOB_NAME**\n" ;;
+              *)       SKIPPED_JOBS+="- **$JOB_NAME**\n" ;;
+            esac
+          done
+
+          # -----------------------------------------------------
+          # Build Facts array (MUST be single-line values)
+          # -----------------------------------------------------
+          FACTS=$(jq -n \
+            --arg workflow "${{ github.workflow }}" \
+            --arg branch "${{ github.ref_name }}" \
+            --arg commit "${{ github.sha }}" \
+            --arg actor "${{ github.actor }}" \
+            --arg apis "$EXPORT_APIS" \
+            '[ 
+              {name:"📋 Workflow:", value:$workflow},
+              {name:"🌿 Branch:",   value:$branch},
+              {name:"🔗 Commit:",   value:$commit},
+              {name:"👤 Initiated By:", value:$actor},
+              {name:"📦 APIs To Export:", value:$apis}
+            ]')
+
+          # Add error fact only if exists
+          if [[ -n "$EXPORT_ERROR" ]]; then
+            SAFE_ERROR=$(printf "%s" "$EXPORT_ERROR" | sed 's/"/\\"/g')
+            FACTS=$(jq -n \
+              --argjson facts "$FACTS" \
+              --arg err "$SAFE_ERROR" \
+              '$facts + [{name:"❌ API Validation Error", value:$err}]'
+            )
+          fi
+
+          # -----------------------------------------------------
+          # Build Markdown sections for job results
+          # -----------------------------------------------------
+          SECTIONS=""
+
+          if [[ -n "$PASSED_JOBS" ]]; then
+            PASSED=$(printf "%s" "$PASSED_JOBS")
+            SECTIONS+=$(jq -n --arg text "### ✅ Passed Jobs\n$PASSED" '{text:$text}'), 
+          fi
+
+          if [[ -n "$FAILED_JOBS" ]]; then
+            FAILED=$(printf "%s" "$FAILED_JOBS")
+            SECTIONS+=$(jq -n --arg text "### ❌ Failed Jobs\n$FAILED" '{text:$text}'), 
+          fi
+
+          if [[ -n "$SKIPPED_JOBS" ]]; then
+            SKIPPED=$(printf "%s" "$SKIPPED_JOBS")
+            SECTIONS+=$(jq -n --arg text "### ⚠️ Skipped Jobs\n$SKIPPED" '{text:$text}'), 
+          fi
+
+          # Remove last comma if exists
+          SECTIONS="[${SECTIONS%,}]"
+
+          # -----------------------------------------------------
+          # Final JSON payload
+          # -----------------------------------------------------
+          JSON_PAYLOAD=$(jq -n \
+            --arg title "$TITLE" \
+            --arg color "$COLOR" \
+            --arg repo "${{ github.repository }}" \
+            --argjson facts "$FACTS" \
+            --argjson extra "$SECTIONS" \
+            '
+            {
+              "@type": "MessageCard",
+              "@context": "https://schema.org/extensions",
+              summary: $title,
+              themeColor: $color,
+              title: $title,
+              sections: (
+                [
+                  {
+                    activityTitle: ("**Repository: " + $repo + "**"),
+                    facts: $facts
+                  }
+                ] + $extra
+              )
+            }
+            ')
+
+          echo "------------ TEAMS PAYLOAD BEGIN -------------"
+          echo "$JSON_PAYLOAD"
+          echo "------------ TEAMS PAYLOAD END ---------------"
+
+          # -----------------------------------------------------
+          # Send notification to Teams
+          # -----------------------------------------------------
+          curl -s -f -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD" \
+            "${{ env.TEAMS_WEBHOOK_URL_APIM_EXPORT }}"

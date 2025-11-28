@@ -426,3 +426,134 @@ done
 printf "Cleaned API names:\n"
 printf '%s\n' "${CLEAN_NAMES[@]}"
 
+###########################28/11
+
+
+      - name: Notify Release Status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPORT_APIS="${{ steps.determine_apis.outputs.api_names }}"
+          EXPORT_ERROR="${{ steps.determine_apis.outputs.error_reason }}"
+          DETERMINE_APIS_CONCLUSION="${{ steps.determine_apis.conclusion }}"
+
+          # -----------------------------------------------------
+          # Title & Color
+          # -----------------------------------------------------
+          if [[ "$DETERMINE_APIS_CONCLUSION" == "failure" || -n "$EXPORT_ERROR" ]]; then
+            TITLE="❌ Pre-Release Verification: Failed | Release Blocked"
+            COLOR="B22222"
+          else
+            TITLE="✅ Pre-Release Verification: Success | Release Ready"
+            COLOR="2E8B57"
+          fi
+
+          # -----------------------------------------------------
+          # Collect job results from needs
+          # -----------------------------------------------------
+          NEEDS_JSON='${{ toJson(needs) }}'
+          [[ -z "$NEEDS_JSON" || "$NEEDS_JSON" == "null" ]] && NEEDS_JSON="{}"
+
+          PASSED_JOBS=""
+          FAILED_JOBS=""
+          SKIPPED_JOBS=""
+
+          for job in $(jq -r 'keys[]' <<< "$NEEDS_JSON" 2>/dev/null || echo ""); do
+            RESULT=$(jq -r ".\"$job\".result" <<< "$NEEDS_JSON")
+            JOB_NAME=$(echo "$job" | sed -E 's/([a-z])([A-Z])/\1 \2/g')
+
+            case "$RESULT" in
+              success) PASSED_JOBS+="- **$JOB_NAME**\n" ;;
+              failure) FAILED_JOBS+="- **$JOB_NAME**\n" ;;
+              *)       SKIPPED_JOBS+="- **$JOB_NAME**\n" ;;
+            esac
+          done
+
+          # -----------------------------------------------------
+          # Build Facts array (MUST be single-line values)
+          # -----------------------------------------------------
+          FACTS=$(jq -n \
+            --arg workflow "${{ github.workflow }}" \
+            --arg branch "${{ github.ref_name }}" \
+            --arg commit "${{ github.sha }}" \
+            --arg actor "${{ github.actor }}" \
+            --arg apis "$EXPORT_APIS" \
+            '[ 
+              {name:"📋 Workflow:", value:$workflow},
+              {name:"🌿 Branch:",   value:$branch},
+              {name:"🔗 Commit:",   value:$commit},
+              {name:"👤 Initiated By:", value:$actor},
+              {name:"📦 APIs To Export:", value:$apis}
+            ]')
+
+          # Add error fact only if exists
+          if [[ -n "$EXPORT_ERROR" ]]; then
+            SAFE_ERROR=$(printf "%s" "$EXPORT_ERROR" | sed 's/"/\\"/g')
+            FACTS=$(jq -n \
+              --argjson facts "$FACTS" \
+              --arg err "$SAFE_ERROR" \
+              '$facts + [{name:"❌ API Validation Error", value:$err}]'
+            )
+          fi
+
+          # -----------------------------------------------------
+          # Build Markdown sections for job results
+          # -----------------------------------------------------
+          SECTIONS=""
+
+          if [[ -n "$PASSED_JOBS" ]]; then
+            PASSED=$(printf "%s" "$PASSED_JOBS")
+            SECTIONS+=$(jq -n --arg text "### ✅ Passed Jobs\n$PASSED" '{text:$text}'), 
+          fi
+
+          if [[ -n "$FAILED_JOBS" ]]; then
+            FAILED=$(printf "%s" "$FAILED_JOBS")
+            SECTIONS+=$(jq -n --arg text "### ❌ Failed Jobs\n$FAILED" '{text:$text}'), 
+          fi
+
+          if [[ -n "$SKIPPED_JOBS" ]]; then
+            SKIPPED=$(printf "%s" "$SKIPPED_JOBS")
+            SECTIONS+=$(jq -n --arg text "### ⚠️ Skipped Jobs\n$SKIPPED" '{text:$text}'), 
+          fi
+
+          # Remove last comma if exists
+          SECTIONS="[${SECTIONS%,}]"
+
+          # -----------------------------------------------------
+          # Final JSON payload
+          # -----------------------------------------------------
+          JSON_PAYLOAD=$(jq -n \
+            --arg title "$TITLE" \
+            --arg color "$COLOR" \
+            --arg repo "${{ github.repository }}" \
+            --argjson facts "$FACTS" \
+            --argjson extra "$SECTIONS" \
+            '
+            {
+              "@type": "MessageCard",
+              "@context": "https://schema.org/extensions",
+              summary: $title,
+              themeColor: $color,
+              title: $title,
+              sections: (
+                [
+                  {
+                    activityTitle: ("**Repository: " + $repo + "**"),
+                    facts: $facts
+                  }
+                ] + $extra
+              )
+            }
+            ')
+
+          echo "------------ TEAMS PAYLOAD BEGIN -------------"
+          echo "$JSON_PAYLOAD"
+          echo "------------ TEAMS PAYLOAD END ---------------"
+
+          # -----------------------------------------------------
+          # Send notification to Teams
+          # -----------------------------------------------------
+          curl -s -f -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD" \
+            "${{ env.TEAMS_WEBHOOK_URL_APIM_EXPORT }}"

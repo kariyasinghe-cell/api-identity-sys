@@ -139,9 +139,17 @@
 
             # Find zip files inside the release (assumes each exported API is a .zip file)
             # basename ... .zip yields the API names
-            mapfile -t found < <(find release_tmp -type f -name "*.zip" -exec basename {} .zip \;)
-            if [[ ${#found[@]} -gt 0 ]]; then
-              RELEASE_APIS=$(printf '%s,' "${found[@]}" | sed 's/,$//')
+            mapfile -t raw_files < <(find release_tmp -type f -name "*.zip" -exec basename {} .zip \;)
+            
+            cleaned=()
+            for file in "${raw_files[@]}"; do
+              # remove version suffix: *_1.0.0 → *
+              cleaned_name=$(echo "$file" | sed -E 's/_[0-9]+\.[0-9]+\.[0-9]+$//')
+              cleaned+=("$cleaned_name")
+            done
+            
+            if [[ ${#cleaned[@]} -gt 0 ]]; then
+              RELEASE_APIS=$(printf '%s,' "${cleaned[@]}" | sed 's/,$//')
             else
               RELEASE_APIS=""
             fi

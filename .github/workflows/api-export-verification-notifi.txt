@@ -105,3 +105,167 @@
           curl -s -f -H "Content-Type: application/json" \
             -d "$JSON_PAYLOAD" \
             "$TEAMS_WEBHOOK_URL" || true
+
+
+
+=======================================
+
+
+
+      - name: Verify GitHub Release APIs & Notify Teams
+        id: verify_release
+        shell: bash
+        env:
+          TEAMS_WEBHOOK_URL: ${{ env.TEAMS_WEBHOOK_URL_APIM_EXPORT }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ inputs.version }}"
+          RELEASE_ZIP="${GITHUB_WORKSPACE}/${TAG}-release-apis.zip"
+          EXPECTED_APIS="${{ steps.export_apis.outputs.exported_apis }}"  # "📦 APIs To Export"
+
+          echo "📦 Expected APIs: '${EXPECTED_APIS}'"
+
+          RELEASE_ERROR=""
+          RELEASE_APIS=""
+
+          if [[ ! -f "$RELEASE_ZIP" ]]; then
+            RELEASE_ERROR="❌ Release zip not found: $RELEASE_ZIP"
+            echo "$RELEASE_ERROR"
+          else
+            rm -rf release_tmp
+            mkdir -p release_tmp
+            unzip -q "$RELEASE_ZIP" -d release_tmp
+
+            # Find zip files inside the release (assumes each exported API is a .zip file)
+            # basename ... .zip yields the API names
+            mapfile -t found < <(find release_tmp -type f -name "*.zip" -exec basename {} .zip \;)
+            if [[ ${#found[@]} -gt 0 ]]; then
+              RELEASE_APIS=$(printf '%s,' "${found[@]}" | sed 's/,$//')
+            else
+              RELEASE_APIS=""
+            fi
+
+            echo "📦 APIs in Release: '${RELEASE_APIS}'"
+          fi
+
+          # Helper to split CSV into trimmed array (handles empty string)
+          split_csv_to_array() {
+            local csv="$1"
+            local -n _out=$2
+            _out=()
+            if [[ -z "$csv" ]]; then
+              return 0
+            fi
+            IFS=',' read -r -a tmp <<< "$csv"
+            for item in "${tmp[@]}"; do
+              # trim whitespace
+              item="$(printf '%s' "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+              if [[ -n "$item" ]]; then
+                _out+=("$item")
+              fi
+            done
+          }
+
+          split_csv_to_array "$EXPECTED_APIS" expected_array
+          split_csv_to_array "$RELEASE_APIS" release_array
+
+          # Compute: missing = expected - release
+          missing=()
+          for exp in "${expected_array[@]}"; do
+            found=false
+            for rel in "${release_array[@]}"; do
+              if [[ "$exp" == "$rel" ]]; then
+                found=true
+                break
+              fi
+            done
+            if [[ "$found" = false ]]; then
+              missing+=("$exp")
+            fi
+          done
+
+          # Compute extras (release - expected) for reporting only
+          extra=()
+          for rel in "${release_array[@]}"; do
+            found=false
+            for exp in "${expected_array[@]}"; do
+              if [[ "$rel" == "$exp" ]]; then
+                found=true
+                break
+              fi
+            done
+            if [[ "$found" = false ]]; then
+              extra+=("$rel")
+            fi
+          done
+
+          MISSING_APIS=$(IFS=','; echo "${missing[*]:-}")
+          EXTRA_APIS=$(IFS=','; echo "${extra[*]:-}")
+
+          # Verification rule: success only when MISSING_APIS is empty and no release error
+          if [[ -n "$RELEASE_ERROR" ]]; then
+            TITLE="❌ GitHub Release Verification Failed"
+            COLOR="B22222"
+          elif [[ -z "$MISSING_APIS" ]]; then
+            TITLE="✅ GitHub Release Verified Successfully"
+            COLOR="2E8B57"
+          else
+            TITLE="❌ GitHub Release Verification Failed: Missing APIs"
+            COLOR="B22222"
+          fi
+
+          # Build facts (keeps your original card structure)
+          FACTS=$(jq -n \
+            --arg tag "$TAG" \
+            --arg expected "$EXPECTED_APIS" \
+            --arg release "$RELEASE_APIS" \
+            --arg missing "$MISSING_APIS" \
+            --arg extra "$EXTRA_APIS" \
+            '[
+              {name:"🏷 Release Tag:", value:$tag},
+              {name:"📦 APIs To Export:", value:$expected},
+              {name:"📦 APIs in Release:", value:$release},
+              {name:"🚫 Missing APIs (expected but not in release):", value:$missing},
+              {name:"⚠️ Extra APIs in Release (reported only):", value:$extra}
+            ]'
+          )
+
+          if [[ -n "$RELEASE_ERROR" ]]; then
+            SAFE_ERR=$(printf "%s" "$RELEASE_ERROR" | sed 's/"/\\"/g')
+            FACTS=$(jq -n --argjson f "$FACTS" --arg e "$SAFE_ERR" \
+              '$f + [{name:"❌ Release Error", value:$e}]'
+            )
+          fi
+
+          JSON_PAYLOAD=$(jq -n \
+            --arg title "$TITLE" \
+            --arg color "$COLOR" \
+            --arg repo "${{ github.repository }}" \
+            --argjson facts "$FACTS" \
+            '
+            {
+              "@type": "MessageCard",
+              "@context": "https://schema.org/extensions",
+              summary: $title,
+              themeColor: $color,
+              title: $title,
+              sections: [
+                {
+                  activityTitle: ("**Repository: " + $repo + "**"),
+                  facts: $facts
+                }
+              ]
+            }
+            '
+          )
+
+          echo "Sending Teams notification with verification status: $TITLE"
+          curl -s -f -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD" \
+            "$TEAMS_WEBHOOK_URL" || true
+
+          # also set outputs so subsequent steps can react
+          echo "missing_apis=${MISSING_APIS}" >> "$GITHUB_OUTPUT"
+          echo "extra_apis=${EXTRA_APIS}" >> "$GITHUB_OUTPUT"
+          echo "release_verification_title=${TITLE}" >> "$GITHUB_OUTPUT"

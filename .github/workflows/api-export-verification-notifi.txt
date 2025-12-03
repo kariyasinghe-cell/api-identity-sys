@@ -1,0 +1,107 @@
+      - name: Verify GitHub Release APIs & Notify Teams
+        id: verify_release
+        shell: bash
+        env:
+          TEAMS_WEBHOOK_URL: ${{ env.TEAMS_WEBHOOK_URL_APIM_EXPORT }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ inputs.version }}"
+          RELEASE_ZIP="${GITHUB_WORKSPACE}/${TAG}-release-apis.zip"
+          EXPECTED_APIS="${{ steps.export_apis.outputs.exported_apis }}"
+
+          echo "📦 Expected APIs: $EXPECTED_APIS"
+
+          if [[ ! -f "$RELEASE_ZIP" ]]; then
+            RELEASE_ERROR="❌ Release zip not found: $RELEASE_ZIP"
+          else
+            mkdir -p release_tmp
+            unzip -q "$RELEASE_ZIP" -d release_tmp
+
+            RELEASE_APIS=$(find release_tmp -type f -name "*.zip" -exec basename {} .zip \; | paste -sd "," -)
+            RELEASE_APIS="${RELEASE_APIS:-}"
+
+            echo "📦 Release contains: $RELEASE_APIS"
+          fi
+
+          # Convert to arrays
+          IFS=',' read -r -a expected_array <<< "$EXPECTED_APIS"
+          IFS=',' read -r -a release_array <<< "${RELEASE_APIS:-}"
+
+          # Compare
+          missing=()
+          extra=()
+
+          for api in "${expected_array[@]}"; do
+            if [[ ! " ${release_array[*]} " =~ " $api " ]]; then
+              missing+=("$api")
+            fi
+          done
+
+          for api in "${release_array[@]}"; do
+            if [[ ! " ${expected_array[*]} " =~ " $api " ]]; then
+              extra+=("$api")
+            fi
+          done
+
+          MISSING_APIS=$(IFS=','; echo "${missing[*]:-}")
+          EXTRA_APIS=$(IFS=','; echo "${extra[*]:-}")
+
+          # Determine status
+          if [[ -n "${RELEASE_ERROR:-}" || -n "$MISSING_APIS" || -n "$EXTRA_APIS" ]]; then
+            TITLE="❌ GitHub Release Verification Failed"
+            COLOR="B22222"
+          else
+            TITLE="✅ GitHub Release Verified Successfully"
+            COLOR="2E8B57"
+          fi
+
+          # Build facts
+          FACTS=$(jq -n \
+            --arg tag "$TAG" \
+            --arg expected "$EXPECTED_APIS" \
+            --arg release "$RELEASE_APIS" \
+            --arg missing "$MISSING_APIS" \
+            --arg extra "$EXTRA_APIS" \
+            '[
+              {name:"🏷 Release Tag:", value:$tag},
+              {name:"📦 APIs To Export:", value:$expected},
+              {name:"📦 APIs in Release:", value:$release},
+              {name:"🚫 Missing APIs:", value:$missing},
+              {name:"⚠️ Extra APIs in Release:", value:$extra}
+            ]'
+          )
+
+          if [[ -n "${RELEASE_ERROR:-}" ]]; then
+            SAFE=$(printf "%s" "$RELEASE_ERROR" | sed 's/"/\\"/g')
+            FACTS=$(jq -n --argjson f "$FACTS" --arg e "$SAFE" \
+              '$f + [{name:"❌ Release Error", value:$e}]'
+            )
+          fi
+
+          JSON_PAYLOAD=$(jq -n \
+            --arg title "$TITLE" \
+            --arg color "$COLOR" \
+            --arg repo "${{ github.repository }}" \
+            --argjson facts "$FACTS" \
+            '
+            {
+              "@type": "MessageCard",
+              "@context": "https://schema.org/extensions",
+              summary: $title,
+              themeColor: $color,
+              title: $title,
+              sections: [
+                {
+                  activityTitle: ("**Repository: " + $repo + "**"),
+                  facts: $facts
+                }
+              ]
+            }
+            '
+          )
+
+          echo "Sending Teams notification..."
+          curl -s -f -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD" \
+            "$TEAMS_WEBHOOK_URL" || true

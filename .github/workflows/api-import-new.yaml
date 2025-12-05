@@ -771,3 +771,90 @@ echo "$ZIP_FILES"
   echo "$ZIP_FILES"
   echo "EOF"
 } >> "$GITHUB_OUTPUT"
+
+
+==================================
+
+
+- name: Determine APIs to deploy
+  working-directory: ${{ env.WORKSPACE }}
+  id: detect_apis
+  run: |
+    set -e
+
+    INPUT="${{ inputs.includeAPIs }}"
+    TRIGGERED_BY="${{ inputs.triggeredBy }}"
+    ENV_PATH="apis/${{ env.APIM_ENV }}"
+    API_ROOT="release_content/${ENV_PATH}"
+
+    if [ ! -d "$API_ROOT" ]; then
+      echo "❌ ERROR: Directory '$API_ROOT' not found in release!"
+      exit 1
+    fi
+
+    echo "📁 Looking for API ZIPs inside: $API_ROOT"
+
+    to_zip() {
+      local api="$1"
+      if [[ "$api" == *.zip ]]; then
+        echo "$api"
+      else
+        echo "${api}.zip"
+      fi
+    }
+
+    if [ -z "$INPUT" ] && [ "$TRIGGERED_BY" == "developer" ]; then
+      echo "❌ Developer trigger but no includeAPIs input — stopping pipeline"
+      exit 1
+
+    elif [ -z "$INPUT" ] && [ "$TRIGGERED_BY" == "apim-team" ]; then
+      echo "⚙️ APIM team trigger — including ALL ZIPs from the release"
+
+      FILES=("$API_ROOT"/*.zip)
+
+      if [ ! -e "${FILES[0]}" ]; then
+        echo "❌ No ZIP files found in '$API_ROOT'"
+        exit 1
+      fi
+
+      ZIP_FILES=$(printf "%s\n" "${FILES[@]##*/}")  # Extract basenames, newline-separated
+
+    else
+      echo "User input APIs: $INPUT"
+      IFS=',' read -r -a ARR <<< "$INPUT"
+
+      VALID_ZIPS=()
+      INVALID_ZIPS=()
+
+      for api in "${ARR[@]}"; do
+        api=$(echo "$api" | xargs)  # trim spaces
+        zip_file=$(to_zip "$api")
+
+        if [ -f "$API_ROOT/$zip_file" ]; then
+          VALID_ZIPS+=("$zip_file")
+        else
+          INVALID_ZIPS+=("$zip_file")
+        fi
+      done
+
+      if [ ${#INVALID_ZIPS[@]} -ne 0 ]; then
+        echo "⚠️ WARNING: These ZIP files do NOT exist in the release: ${INVALID_ZIPS[*]}"
+      fi
+
+      if [ ${#VALID_ZIPS[@]} -eq 0 ]; then
+        echo "❌ No valid APIs found in release for input!"
+        exit 1
+      fi
+
+      ZIP_FILES=$(printf "%s\n" "${VALID_ZIPS[@]}")  # newline-separated
+    fi
+
+    echo "✅ Final ZIP files to deploy:"
+    echo "$ZIP_FILES"
+
+    # Export as workflow output
+    {
+      echo "zip_files<<EOF"
+      echo "$ZIP_FILES"
+      echo "EOF"
+    } >> "$GITHUB_OUTPUT"

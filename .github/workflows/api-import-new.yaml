@@ -676,3 +676,78 @@ elif [ -z "$INPUT" ] && [ "$TRIGGERED_BY" == "apim-team" ]; then
   fi
 
   ZIP_FILES=$(printf "%s\n" "${FILES[@]}" | xargs -n1 basename)
+
+
+
+=====================================
+
+
+
+- name: Deploy API Artifacts
+  id: prepareApiForDeployment
+  working-directory: ${{ env.WORKSPACE }}
+  run: |
+    set -euo pipefail
+
+    # Increase apictl timeout
+    apictl set --http-request-timeout 300000
+
+    # Set credentials based on environment
+    case "${{ github.event.inputs.environment }}" in
+      "Dev")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_DEV }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_DEV }}
+        ;;
+      "SIT")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_SIT }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_SIT }}
+        ;;
+      "SIT-sandbox")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_SIT_SANDBOX }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_SIT_SANDBOX }}
+        ;;
+      "UAT-node-1")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_UAT_NODE_1 }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_UAT_NODE_1 }}
+        ;;
+      "UAT-node-2")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_UAT_NODE_2 }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_UAT_NODE_2 }}
+        ;;
+      "STG-sandbox")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_STG_SANDBOX }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_STG_SANDBOX }}
+        ;;
+      *)
+        echo "❌ Unknown environment"
+        exit 1
+        ;;
+    esac
+
+    # Login to APIM
+    apictl login "${{ env.APIM_ENV }}" -u "$APIM_USERNAME" -p "$APIM_PASSWORD" -k --verbose
+
+    echo "📁 APIs to deploy:"
+    echo "${{ env.DEPLOY_APIS }}"
+
+    # Split DEPLOY_APIS by newline
+    IFS=$'\n'
+    for api in $DEPLOY_APIS; do
+      api=$(echo "$api" | xargs)  # trim spaces
+      echo "🚀 Deploying API: $api"
+
+      if apictl import api \
+        -f "${{ env.WORKSPACE }}/release_content/apis/${{ env.APIM_ENV }}/$api" \
+        -e "${{ env.APIM_ENV }}" \
+        -k \
+        --rotate-revision \
+        --verbose; then
+          echo "✅ Imported $api successfully"
+      else
+          echo "❌ Failed to import $api"
+          echo "🔍 Error details logged above"
+          # Continue to next API
+      fi
+
+      sleep 5
+    done

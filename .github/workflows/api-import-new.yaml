@@ -751,3 +751,23 @@ elif [ -z "$INPUT" ] && [ "$TRIGGERED_BY" == "apim-team" ]; then
 
       sleep 5
     done
+
+===============
+
+# After building VALID_ZIPS
+if [ ${#VALID_ZIPS[@]} -eq 0 ]; then
+  echo "❌ No valid APIs found in release for input!"
+  exit 1
+fi
+
+# Output newline-separated ZIP files
+ZIP_FILES=$(printf "%s\n" "${VALID_ZIPS[@]}")
+
+echo "✅ Final ZIP files to deploy:"
+echo "$ZIP_FILES"
+
+{
+  echo "zip_files<<EOF"
+  echo "$ZIP_FILES"
+  echo "EOF"
+} >> "$GITHUB_OUTPUT"

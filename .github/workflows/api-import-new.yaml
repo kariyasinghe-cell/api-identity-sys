@@ -660,3 +660,19 @@ jobs:
 
     echo "✅ Extraction finished."
 
+
+
+====================================
+
+
+elif [ -z "$INPUT" ] && [ "$TRIGGERED_BY" == "apim-team" ]; then
+  echo "⚙️ APIM team trigger — including ALL ZIPs from the release"
+
+  FILES=("$API_ROOT"/*.zip)
+
+  if [ ! -e "${FILES[0]}" ]; then
+    echo "❌ No ZIP files found in '$API_ROOT'"
+    exit 1
+  fi
+
+  ZIP_FILES=$(printf "%s\n" "${FILES[@]}" | xargs -n1 basename)

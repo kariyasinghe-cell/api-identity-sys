@@ -858,3 +858,105 @@ echo "$ZIP_FILES"
       echo "$ZIP_FILES"
       echo "EOF"
     } >> "$GITHUB_OUTPUT"
+
+
+
+==========================================================
+
+
+pre-deploy-notify:
+  name: Notify Deployment Status
+  runs-on: ubuntu-latest
+  needs:
+    - determine_apis
+    - validate-api-artifacts
+  if: always()
+  env:
+    TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    DEPLOY_APIS: ${{ needs.determine_apis.outputs.apis-to-deploy }}
+    RELEASE_VERSION: ${{ inputs.releaseVersion }}
+   
+  steps:
+    - name: Notify Deployment Status
+      run: |
+
+        echo "${{ env.DEPLOY_APIS }}"
+
+        set -euo pipefail
+        TITLE=""
+        COLOR=""
+        PASSED_JOBS=""
+        FAILED_JOBS=""
+        SKIPPED_JOBS=""
+        OPTIONAL_FAILED_JOBS=""
+
+        prettify() {
+          echo "$1" | sed -E 's/([a-z])([A-Z])/\1 \2/g'
+        }
+
+        pad_right() {
+          printf "%-30s" "$1"
+        }
+
+        NEEDS_JSON='${{ toJson(needs) }}'
+
+        echo "Fetching job results..."
+        for job in $(jq -r 'keys[]' <<< "$NEEDS_JSON"); do
+          RESULT=$(jq -r ".\"$job\".result" <<< "$NEEDS_JSON")
+          JOB_NAME=$(prettify "$job")
+          PADDED_JOB_NAME=$(pad_right "$JOB_NAME")
+
+          if [[ "$RESULT" == "success" ]]; then
+            PASSED_JOBS+="- ✅ $PADDED_JOB_NAME\n"
+          elif [[ "$RESULT" == "failure" ]]; then
+            FAILED_JOBS+="- ❌ $PADDED_JOB_NAME\n"
+          else
+            SKIPPED_JOBS+="- ⚠️ $PADDED_JOB_NAME\n"
+          fi
+        done
+
+        if [[ -z "$FAILED_JOBS" && -z "$SKIPPED_JOBS" ]]; then
+          TITLE="✅ Pre-Deployment Verification: Success | Deployment Ready"
+          COLOR="2E8B57"
+        else
+          TITLE="❌ Pre-Deployment Verification: Failed | Deployment Blocked"
+          COLOR="B22222"
+        fi
+
+        FACTS="[ \
+          {\"name\":\"📋 Workflow:\", \"value\":\"${{ github.workflow }}\"}, \
+          {\"name\":\"🌿 Branch:\", \"value\":\"${{ github.ref_name }}\"}, \
+          {\"name\":\"🔗 Commit:\", \"value\":\"${{ github.sha }}\"}, \
+          {\"name\":\"👤 Initiated By:\", \"value\":\"${{ github.actor }}\"}, \
+          {\"name\":\"🏷️ Release Version:\", \"value\":\"${{ env.RELEASE_VERSION }}\"}, \
+          {\"name\":\"📂 APIs to Deploy:\", \"value\":\"\"}, \
+          {\"name\":\"\", \"value\":\"$(echo -e "${{ env.DEPLOY_APIS }}" | sed 's/"/\\"/g')\"} \
+        "
+
+        [[ -n "$PASSED_JOBS" ]] && FACTS+=", {\"name\":\"✅ Passed Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$PASSED_JOBS" | sed 's/"/\\"/g')\"}"
+        [[ -n "$FAILED_JOBS" ]] && FACTS+=", {\"name\":\"❌ Failed Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$FAILED_JOBS" | sed 's/"/\\"/g')\"}"
+        [[ -n "$SKIPPED_JOBS" ]] && FACTS+=", {\"name\":\"⚠️ Skipped Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$SKIPPED_JOBS" | sed 's/"/\\"/g')\"}"
+        [[ -n "$OPTIONAL_FAILED_JOBS" ]] && FACTS+=", {\"name\":\"❌ Failed (Optional)\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$OPTIONAL_FAILED_JOBS" | sed 's/"/\\"/g')\"}"
+
+        FACTS+="]"
+
+        JSON_PAYLOAD=$(cat <<EOF
+        {
+          "@type": "MessageCard",
+          "@context": "https://schema.org/extensions",
+          "summary": "$TITLE",
+          "themeColor": "$COLOR",
+          "title": "$TITLE",
+          "sections": [
+            {
+              "activityTitle": "**Repository: ${{ github.repository }}**",
+              "facts": $FACTS
+            }
+          ]
+        }
+        EOF
+        )
+
+        curl -s -f -H 'Content-Type: application/json' \
+          -d "$JSON_PAYLOAD" \
+          "${{ env.TEAMS_WEBHOOK_URL }}"

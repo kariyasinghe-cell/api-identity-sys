@@ -567,3 +567,96 @@ jobs:
                 # Continue to next API
             fi
             sleep 5
+
+
+=============================================================
+
+
+
+- name: Download GitHub Release ZIP (Auto Asset Detection + Retry)
+  id: download_release
+  run: |
+    set -e
+
+    REPO="sampathbankplc/middleware-apim-sampathvishwa-app-apis"
+    INPUT_VER="${{ inputs.releaseVersion }}"
+
+    echo "🔍 Requested release version: $INPUT_VER"
+
+    # Determine release tag
+    if [ "$INPUT_VER" = "latest" ]; then
+      echo "📦 Fetching latest release metadata..."
+      RELEASE_JSON=$(curl -s \
+        -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+        "https://api.github.com/repos/$REPO/releases/latest")
+    else
+      echo "📦 Fetching release metadata for tag $INPUT_VER..."
+      RELEASE_JSON=$(curl -s \
+        -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+        "https://api.github.com/repos/$REPO/releases/tags/$INPUT_VER")
+    fi
+
+    # Extract release tag
+    RELEASE_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
+    echo "✅ Release tag resolved to: $RELEASE_TAG"
+
+    # Expected filename pattern
+    EXPECTED_FILE="${RELEASE_TAG}-release-apis.zip"
+
+    echo "🔍 Looking for asset file: $EXPECTED_FILE"
+
+    # Extract asset ID from release assets json
+    ASSET_ID=$(echo "$RELEASE_JSON" \
+      | jq -r ".assets[] | select(.name == \"$EXPECTED_FILE\") | .id")
+
+    if [ -z "$ASSET_ID" ] || [ "$ASSET_ID" = "null" ]; then
+      echo "❌ ERROR: Could not find asset '$EXPECTED_FILE' in release '$RELEASE_TAG'"
+      echo "Available assets:"
+      echo "$RELEASE_JSON" | jq -r '.assets[].name'
+      exit 1
+    fi
+
+    echo "📄 Found asset ID: $ASSET_ID"
+
+    ASSET_URL="https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID"
+
+    echo "🌐 Download URL (GitHub API): $ASSET_URL"
+
+    # Retry logic: 3 attempts with delay
+    attempt=1
+    while [ $attempt -le 3 ]; do
+      echo "⬇️ Download attempt $attempt..."
+
+      curl -L \
+        -H "Accept: application/octet-stream" \
+        -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+        -o release.zip \
+        "$ASSET_URL" && break
+
+      echo "⚠️ Download failed (attempt $attempt)"
+      attempt=$((attempt + 1))
+      sleep 2
+    done
+
+    if [ ! -f release.zip ]; then
+      echo "❌ ERROR: Failed to download release asset after 3 attempts"
+      exit 1
+    fi
+
+    echo "📁 Download completed. File info:"
+    ls -lh release.zip
+    file release.zip
+
+    # Validate ZIP
+    if ! file release.zip | grep -q "Zip archive data"; then
+      echo "❌ ERROR: Downloaded file is NOT a zip archive"
+      echo "It may be an HTML output from GitHub"
+      cat release.zip | head -20 || true
+      exit 1
+    fi
+
+    echo "📂 Extracting ZIP..."
+    unzip -q release.zip -d release_content
+
+    echo "✅ Extraction finished."
+

@@ -999,3 +999,40 @@ pre-deploy-notify:
       echo ""
 
     done
+
+
+=================================
+
+
+
+- name: Extract API Categories from each API ZIP
+  id: extract_categories
+  shell: bash
+  run: |
+    cd "${{ env.WORKSPACE }}"
+    pwd
+
+    API_PATH="release_content/apis/${{ env.APIM_ENV }}"
+
+    echo "Scanning APIs in: $API_PATH"
+    echo ""
+
+    for ZIP in "$API_PATH"/*.zip; do
+      echo "---- Processing: $ZIP ----"
+
+      FOLDER="${ZIP%.zip}"
+      mkdir -p "$FOLDER"
+      unzip -q "$ZIP" -d "$FOLDER"
+
+      API_YAML=$(find "$FOLDER" -type f -name "api.yaml" | head -1)
+
+      if [ -z "$API_YAML" ]; then
+        echo "❌ api.yaml NOT FOUND in $ZIP"
+        continue
+      fi
+
+      echo "Found api.yaml: $API_YAML"
+      CATEGORY=$(grep -A1 "categories:" "$API_YAML" | grep "-" | sed 's/^[[:space:]]*-\s*//')
+      echo "API Category: $CATEGORY"
+      echo ""
+    done

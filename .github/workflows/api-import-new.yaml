@@ -1,0 +1,1038 @@
+name: Reusable workflow for deploying APIM APIs
+
+on:
+  workflow_call:
+    inputs:
+      includeAPIs:
+        description: 'Comma-separated list of APIM APIs to include'
+        required: true
+        type: string
+       
+      releaseVersion:
+        description: 'The Git release version which use with the enviorenment'
+        required: true
+        type: string
+
+      triggeredBy:
+        description: "Flag to indicate this is from child workflow"
+        required: false
+        default: "false"
+        type: string
+       
+      environment:
+        description: "API Deployment Environment"
+        required: false
+        default: "Dev"
+        type: string
+       
+jobs:
+  prepare-workspace:
+    name: Define Workspace
+    runs-on: [self-hosted, linux]
+    outputs:
+      workspace-path: ${{ steps.define_workspace.outputs.workspace }}
+    steps:
+      - name: Define Workspace
+        id: define_workspace
+        run: |
+          WS="${{ github.workspace }}/${{ github.run_id }}-ci"
+          mkdir -p "$WS"
+          echo "workspace=$WS" >> $GITHUB_OUTPUT
+          echo "Workspace directory created: $WS"
+         
+  determine_apis:
+    name: Determine APIs to process
+    runs-on: ubuntu-latest
+    needs:
+      - prepare-workspace
+    outputs:
+      apis-to-deploy: ${{ steps.detect_apis.outputs.zip_files }}
+
+    steps:
+      - name: Download GitHub Release ZIP
+        id: download_release
+        run: |
+          set -e
+
+          RELEASE_VERSION="${{ inputs.releaseVersion }}"
+          RELEASE_FILE="${RELEASE_VERSION}-release-apis.zip"
+          RELEASE_URL="https://github.com/sampathbankplc/middleware-apim-sampathvishwa-app-apis/releases/download/${RELEASE_VERSION}/${RELEASE_FILE}"
+
+          echo "Downloading release ZIP: $RELEASE_URL"
+          curl -L -o release.zip "$RELEASE_URL"
+
+          echo "Extracting release.zip..."
+          unzip -q release.zip -d release_content
+
+      - name: Determine APIs to deploy
+        id: detect_apis
+        run: |
+          set -e
+
+          INPUT="${{ inputs.includeAPIs }}"
+          TRIGGERED_BY="${{ inputs.triggeredBy }}"
+          ENV_PATH="apis/${{ env.APIM_ENV }}"
+
+          API_ROOT="release_content/${ENV_PATH}"
+
+          if [ ! -d "$API_ROOT" ]; then
+            echo "❌ ERROR: Directory '$API_ROOT' not found in release!"
+            exit 1
+          fi
+
+          echo "📁 Looking for API ZIPs inside: $API_ROOT"
+
+          to_zip() {
+            local api="$1"
+            if [[ "$api" == *.zip ]]; then
+              echo "$api"
+            else
+              echo "${api}.zip"
+            fi
+          }
+
+          if [ -z "$INPUT" ] && [ "$TRIGGERED_BY" == "developer" ]; then
+            echo "❌ Developer trigger but no includeAPIs input — stopping pipeline"
+            exit 1
+
+          elif [ -z "$INPUT" ] && [ "$TRIGGERED_BY" == "apim-team" ]; then
+            echo "⚙️ APIM team trigger — including ALL ZIPs from the release"
+            ZIP_FILES=$(ls -1 "$API_ROOT"/*.zip 2>/dev/null | xargs -n1 basename)
+
+          else
+            echo "User input APIs: $INPUT"
+            IFS=',' read -r -a ARR <<< "$INPUT"
+
+            VALID_ZIPS=()
+            INVALID_ZIPS=()
+
+            for api in "${ARR[@]}"; do
+              api=$(echo "$api" | xargs)
+              zip_file=$(to_zip "$api")
+
+              if [ -f "$API_ROOT/$zip_file" ]; then
+                VALID_ZIPS+=("$zip_file")
+              else
+                INVALID_ZIPS+=("$zip_file")
+              fi
+            done
+
+            if [ ${#INVALID_ZIPS[@]} -ne 0 ]; then
+              echo "⚠️ WARNING: These ZIP files do NOT exist in the release: ${INVALID_ZIPS[*]}"
+            fi
+
+            if [ ${#VALID_ZIPS[@]} -eq 0 ]; then
+              echo "❌ No valid APIs found in release for input!"
+              exit 1
+            fi
+
+            ZIP_FILES="${VALID_ZIPS[*]}"
+          fi
+
+          echo "✅ Final ZIP files to deploy: $ZIP_FILES"
+
+          {
+            echo "zip_files<<EOF"
+            echo "$ZIP_FILES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+
+  validate-api-artifacts:
+    name: Validate API Preconditions
+    runs-on: [self-hosted, linux]
+    needs:
+      - determine_apis
+    env:
+      DEPLOY_APIS: ${{ needs.determine_apis.outputs.apis-to-deploy }}
+      APIM_ENV: ${{ inputs.environment }}
+    steps:
+
+      - uses: actions/checkout@v4
+        with:
+          repository: sampathbankplc/middleware-apim-sampathvishwa-app-apis
+          fetch-depth: 5
+          path: repo
+
+      - name: Install yq
+        working-directory: ${{ env.WORKSPACE }}
+        run: |
+          WORK_DIR="$RUNNER_WORKSPACE/yq"
+          mkdir -p "$WORK_DIR"
+     
+          if [ ! -f "$WORK_DIR/yq" ]; then
+            cd "$WORK_DIR"
+            echo "Downloading yq to $WORK_DIR..."
+            wget "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -O yq
+          fi
+     
+          chmod +x "$WORK_DIR/yq"
+          echo "$WORK_DIR" >> $GITHUB_PATH
+          echo "yq path added to PATH: $WORK_DIR"
+
+      - name: Install apictl
+        working-directory: ${{ env.WORKSPACE }}
+        run: |
+          echo $RUNNER_WORKSPACE
+          WORK_DIR="$RUNNER_WORKSPACE/apictl-4.1.6"
+          mkdir -p "$WORK_DIR"
+ 
+          if [ ! -f "$WORK_DIR/apictl/apictl" ]; then
+            cd "$WORK_DIR"
+            echo "Downloading apictl to $WORK_DIR..."
+            wget "https://github.com/wso2/product-apim-tooling/releases/download/v4.1.6/apictl-4.1.6-linux-amd64.tar.gz"
+            tar -xvzf apictl-4.1.6-linux-amd64.tar.gz
+          fi
+          chmod +x "$WORK_DIR/apictl/apictl"
+ 
+          echo "$WORK_DIR/apictl" >> $GITHUB_PATH
+          echo "apictl path added to PATH: $WORK_DIR"
+
+      - name: Verify apictl version
+        run: apictl version
+
+      # - name: Validate API ZIPs
+      #   id: validate_apis
+      #   working-directory: repo
+      #   run: |
+      #     echo "Analyzing APIs: $DEPLOY_APIS"
+      #     mkdir -p extracted
+         
+      #     VALIDATION_ERRORS=0
+         
+      #     echo "-------------------------------------------------------"
+      #     echo "📌 Fetching data from APIM"
+      #     echo "-------------------------------------------------------"
+         
+      #     APIM_ROLES=$(apictl get roles -e $APIM_ENV -k | awk '{print $1}' | tail -n +3)
+      #     APIM_POLICIES=$(apictl get policies -e $APIM_ENV -k | awk '{print $1}' | tail -n +3)
+      #     APIM_LABELS=$(apictl get gateways -e $APIM_ENV -k | awk '{print $1}' | tail -n +3)
+      #     APIM_CATEGORIES=$(apictl get api-categories -e $APIM_ENV -k | awk '{print $1}' | tail -n +3)
+
+      #     APIM_ROLES=$(apictl get roles -k | awk '{print $1}' | tail -n +3)
+      #     APIM_POLICIES=$(apictl get policies -k | awk '{print $1}' | tail -n +3)
+      #     APIM_LABELS=$(apictl get gateways -k | awk '{print $1}' | tail -n +3)
+      #     APIM_CATEGORIES=$(apictl get api-categories -k | awk '{print $1}' | tail -n +3)
+         
+      #     echo "APIM → Roles:"
+      #     echo "$APIM_ROLES"
+      #     echo
+      #     echo "APIM → Policies:"
+      #     echo "$APIM_POLICIES"
+      #     echo
+      #     echo "APIM → Gateway Labels:"
+      #     echo "$APIM_LABELS"
+      #     echo
+      #     echo "APIM → API Categories:"
+      #     echo "$APIM_CATEGORIES"
+      #     echo "-------------------------------------------------------"
+         
+         
+      #     for api in $DEPLOY_APIS; do
+      #       echo
+      #       echo "======================================================="
+      #       echo "🔍 Validating ZIP: $api"
+      #       echo "======================================================="
+         
+      #       unzip -o "apim/$api" -d "extracted/$api" >/dev/null
+         
+      #       # Detect inner folder containing api.yaml
+      #       INNER_DIR=$(find "extracted/$api" -type f -name "api.yaml" -printf '%h')
+      #       API_YAML="$INNER_DIR/api.yaml"
+         
+      #       if [[ ! -f "$API_YAML" ]]; then
+      #         echo "❌ api.yaml missing inside zip: $api"
+      #         VALIDATION_ERRORS=$((VALIDATION_ERRORS+1))
+      #         continue
+      #       fi
+         
+      #       echo "📄 Found api.yaml at: $API_YAML"
+      #       echo
+         
+      #       echo "-------------------------------------------------------"
+      #       echo "📌 API ZIP → Extracting Info"
+      #       echo "-------------------------------------------------------"
+         
+      #       # 1️⃣ Roles from scopes
+      #       ZIP_ROLES=$(yq e '.scopes[].roles // ""' "$API_YAML" | tr ',' '\n' | xargs -I {} echo {} | sort -u)
+      #       echo "ZIP → Roles:"
+      #       echo "${ZIP_ROLES:-None}"
+      #       echo
+         
+      #       # 2️⃣ Policies
+      #       ZIP_POLICIES=$(yq e '.throttlingPolicy, .subscriptionPolicies[], .applicationPolicies[]?' "$API_YAML" | grep -v null || true)
+      #       echo "ZIP → Policies:"
+      #       echo "${ZIP_POLICIES:-None}"
+      #       echo
+         
+      #       # 3️⃣ Gateway Labels
+      #       ZIP_LABELS=$(yq e '.gatewayLabels[]?' "$API_YAML" || true)
+      #       echo "ZIP → Gateway Labels:"
+      #       echo "${ZIP_LABELS:-None}"
+      #       echo
+         
+      #       # 4️⃣ API Categories
+      #       ZIP_CATEGORIES=$(yq e '.categories[]?' "$API_YAML" || true)
+      #       echo "ZIP → API Categories:"
+      #       echo "${ZIP_CATEGORIES:-None}"
+      #       echo
+         
+      #       # 5️⃣ Extract endpoints
+      #       ZIP_ENDPOINTS=$(yq e '.endpointConfig.*.url?' "$API_YAML" || true)
+      #       echo "ZIP → Endpoints:"
+      #       echo "${ZIP_ENDPOINTS:-None}"
+      #       echo
+         
+      #       echo "-------------------------------------------------------"
+      #       echo "📌 Comparing: ZIP vs APIM"
+      #       echo "-------------------------------------------------------"
+         
+      #       # Compare roles
+      #       for ROLE in $ZIP_ROLES; do
+      #         if ! echo "$APIM_ROLES" | grep -qw "$ROLE"; then
+      #           echo "⚠️ Missing Role in APIM: $ROLE"
+      #         else
+      #           echo "✔ Role exists: $ROLE"
+      #         fi
+      #       done
+      #       echo
+         
+      #       # Compare policies
+      #       for P in $ZIP_POLICIES; do
+      #         if ! echo "$APIM_POLICIES" | grep -qw "$P"; then
+      #           echo "⚠️ Missing Policy in APIM: $P"
+      #         else
+      #           echo "✔ Policy exists: $P"
+      #         fi
+      #       done
+      #       echo
+         
+      #       # Compare labels
+      #       for L in $ZIP_LABELS; do
+      #         if ! echo "$APIM_LABELS" | grep -qw "$L"; then
+      #           echo "⚠️ Missing Gateway Label in APIM: $L"
+      #         else
+      #           echo "✔ Gateway Label exists: $L"
+      #         fi
+      #       done
+      #       echo
+         
+      #       # Compare categories
+      #       for C in $ZIP_CATEGORIES; do
+      #         if ! echo "$APIM_CATEGORIES" | grep -qw "$C"; then
+      #           echo "⚠️ Missing API Category in APIM: $C"
+      #         else
+      #           echo "✔ API Category exists: $C"
+      #         fi
+      #       done
+      #       echo
+         
+      #       # Check Endpoint Certificates
+      #       for E in $ZIP_ENDPOINTS; do
+      #         HOST=$(echo "$E" | sed -E 's@https?://([^:/]+).*@\1@')
+      #         if keytool -printcert -rfc -sslserver "$HOST" >/dev/null 2>&1; then
+      #           echo "✔ Endpoint cert valid: $HOST"
+      #         else
+      #           echo "⚠️ Endpoint cert NOT trusted: $HOST"
+      #         fi
+      #       done
+         
+      #     done
+         
+      #     echo "VALIDATION_ERRORS=$VALIDATION_ERRORS" >> $GITHUB_OUTPUT
+
+  pre-deploy-notify:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs:
+      - determine_apis
+      # - validate-api-artifacts
+    if: always()
+    env:
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+      DEPLOY_APIS: ${{ needs.determine_apis.outputs.apis-to-deploy }}
+     
+    steps:
+      - name: Notify Deployment Status
+        run: |
+
+          echo "${{ env.DEPLOY_APIS }}"
+         
+          set -euo pipefail
+          TITLE=""
+          COLOR=""
+          PASSED_JOBS=""
+          FAILED_JOBS=""
+          SKIPPED_JOBS=""
+          OPTIONAL_FAILED_JOBS=""
+ 
+          prettify() {
+            echo "$1" | sed -E 's/([a-z])([A-Z])/\1 \2/g'
+          }
+ 
+          pad_right() {
+            printf "%-30s" "$1"
+          }
+ 
+          NEEDS_JSON='${{ toJson(needs) }}'
+ 
+          echo "Fetching job results..."
+          for job in $(jq -r 'keys[]' <<< "$NEEDS_JSON"); do
+            RESULT=$(jq -r ".\"$job\".result" <<< "$NEEDS_JSON")
+            JOB_NAME=$(prettify "$job")
+            PADDED_JOB_NAME=$(pad_right "$JOB_NAME")
+ 
+            if [[ "$RESULT" == "success" ]]; then
+              PASSED_JOBS+="- ✅ $PADDED_JOB_NAME\n"
+            elif [[ "$RESULT" == "failure" ]]; then
+              FAILED_JOBS+="- ❌ $PADDED_JOB_NAME\n"
+            else
+              SKIPPED_JOBS+="- ⚠️ $PADDED_JOB_NAME\n"
+            fi
+          done
+ 
+          if [[ -z "$FAILED_JOBS" && -z "$SKIPPED_JOBS" ]]; then
+            TITLE="✅ Pre-Deployment Verification: Success | Deployment Ready"
+            COLOR="2E8B57"
+          else
+            TITLE="❌ Pre-Deployment Verification: Failed | Deployment Blocked"
+            COLOR="B22222"
+          fi
+ 
+          FACTS="[ \
+            {\"name\":\"📋 Workflow:\", \"value\":\"${{ github.workflow }}\"}, \
+            {\"name\":\"🌿 Branch:\", \"value\":\"${{ github.ref_name }}\"}, \
+            {\"name\":\"🔗 Commit:\", \"value\":\"${{ github.sha }}\"}, \
+            {\"name\":\"👤 Initiated By:\", \"value\":\"${{ github.actor }}\"} \
+          "
+ 
+          [[ -n "$PASSED_JOBS" ]] && FACTS+=", {\"name\":\"✅ Passed Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$PASSED_JOBS" | sed 's/"/\\"/g')\"}"
+          [[ -n "$FAILED_JOBS" ]] && FACTS+=", {\"name\":\"❌ Failed Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$FAILED_JOBS" | sed 's/"/\\"/g')\"}"
+          [[ -n "$SKIPPED_JOBS" ]] && FACTS+=", {\"name\":\"⚠️ Skipped Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$SKIPPED_JOBS" | sed 's/"/\\"/g')\"}"
+          [[ -n "$OPTIONAL_FAILED_JOBS" ]] && FACTS+=", {\"name\":\"❌ Failed (Optional)\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$OPTIONAL_FAILED_JOBS" | sed 's/"/\\"/g')\"}"
+ 
+          FACTS+="]"
+ 
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            "summary": "$TITLE",
+            "themeColor": "$COLOR",
+            "title": "$TITLE",
+            "sections": [
+              {
+                "activityTitle": "**Repository: ${{ github.repository }}**",
+                "facts": $FACTS
+              }
+            ]
+          }
+          EOF
+          )
+ 
+          curl -s -f -H 'Content-Type: application/json' \
+            -d "$JSON_PAYLOAD" \
+            "${{ env.TEAMS_WEBHOOK_URL }}"
+
+  deploy-apis-to-apim:
+    name: Deploy APIM API
+    environment: dev-integration
+    runs-on: [self-hosted, linux]
+    needs:
+      - prepare-workspace
+      - determine_apis
+      - pre-deploy-notify
+    env:
+      WORKSPACE: ${{ needs.prepare-workspace.outputs.workspace-path }}
+      DEPLOY_APIS: ${{ needs.determine_apis.outputs.apis-to-deploy }}
+      APIM_ENV: ${{ inputs.environment }}
+    strategy:
+      max-parallel: 1
+    steps:
+      - name: Install apictl
+        working-directory: ${{ env.WORKSPACE }}
+        run: |
+          echo $RUNNER_WORKSPACE
+          WORK_DIR="$RUNNER_WORKSPACE/apictl-4.1.6"
+          mkdir -p "$WORK_DIR"
+ 
+          if [ ! -f "$WORK_DIR/apictl/apictl" ]; then
+            cd "$WORK_DIR"
+            echo "Downloading apictl to $WORK_DIR..."
+            wget "https://github.com/wso2/product-apim-tooling/releases/download/v4.1.6/apictl-4.1.6-linux-amd64.tar.gz"
+            tar -xvzf apictl-4.1.6-linux-amd64.tar.gz
+          fi
+          chmod +x "$WORK_DIR/apictl/apictl"
+ 
+          echo "$WORK_DIR/apictl" >> $GITHUB_PATH
+          echo "apictl path added to PATH: $WORK_DIR"
+
+      - name: Verify apictl version
+        run: apictl version
+
+      - name: Add Environment
+        shell: bash
+        run: |
+          case "${{ github.event.inputs.environment }}" in
+            "Dev")
+              APIM_ENV_URL=${{ secrets.APIM_ENV_URL_DEV }}
+              ;;
+            "SIT")
+              APIM_ENV_URL=${{ secrets.APIM_ENV_URL_SIT }}
+              ;;
+            "SIT-sandbox")
+              APIM_ENV_URL=${{ secrets.APIM_ENV_URL_SIT_SANDBOX }}
+              ;;
+            "UAT-node-1")
+               APIM_ENV_URL=${{ secrets.APIM_ENV_URL_UAT_NODE_1 }}
+               ;;
+            "UAT-node-2")
+              APIM_ENV_URL=${{ secrets.APIM_ENV_URL_UAT_NODE_2 }}
+              ;;
+            "STG-sandbox")
+              APIM_ENV_URL=${{ secrets.APIM_ENV_URL_STG_SANDBOX }}
+              ;;
+            *)
+              echo "❌ Unknown environment"
+              exit 1
+              ;;
+          esac
+
+          if apictl get envs | grep -q "${{ env.APIM_ENV }}"; then
+            echo "Environment '${{ env.APIM_ENV }}' already exists. Skipping."
+          else
+            apictl add env ${{ env.APIM_ENV }} --apim https://$APIM_ENV_URL
+          fi
+       
+      - name: Deploy API Artifacts
+        id: prepareApiForDeployment
+        working-directory: ${{ env.WORKSPACE }}
+        run: |      
+          # Increase apictl timeout
+          apictl set --http-request-timeout 300000
+
+          case "${{ github.event.inputs.environment }}" in
+            "Dev")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_DEV }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_DEV }}
+              ;;
+            "SIT")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_SIT }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_SIT }}
+              ;;
+            "SIT-sandbox")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_SIT_SANDBOX }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_SIT_SANDBOX }}
+              ;;
+            "UAT-node-1")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_UAT_NODE_1 }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_UAT_NODE_1 }}
+              ;;
+            "UAT-node-2")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_UAT_NODE_2 }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_UAT_NODE_2 }}
+              ;;
+            "STG-sandbox")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_STG_SANDBOX }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_STG_SANDBOX }}
+              ;;
+            *)
+              echo "❌ Unknown environment"
+              exit 1
+              ;;
+          esac
+     
+          # Login to APIM
+          apictl login "${{ env.APIM_ENV }}" -u "$APIM_USERNAME" -p "$APIM_PASSWORD" -k --verbose
+
+          for api in $DEPLOY_APIS; do
+            echo "🚀 Deploying API: $api"
+            if apictl import api \
+              -f "${{ env.WORKSPACE }}/apim/$api" \
+              -e "${{ env.APIM_ENV }}" \
+              -k \
+              --rotate-revision \
+              --verbose; then
+                echo "✅ Imported $api successfully"
+            else
+                echo "❌ Failed to import $api"
+                echo "🔍 Error details:"
+                # Capture and print error logs
+                apictl import api \
+                  -f "${{ env.WORKSPACE }}/apim/$api" \
+                  -e "${{ env.APIM_ENV }}" \
+                  -k \
+                  --rotate-revision \
+                  --verbose 2>&1 | tee /dev/stderr
+                # Continue to next API
+            fi
+            sleep 5
+
+
+=============================================================
+
+
+
+- name: Download GitHub Release ZIP (Auto Asset Detection + Retry)
+  id: download_release
+  run: |
+    set -e
+
+    REPO="sampathbankplc/middleware-apim-sampathvishwa-app-apis"
+    INPUT_VER="${{ inputs.releaseVersion }}"
+
+    echo "🔍 Requested release version: $INPUT_VER"
+
+    # Determine release tag
+    if [ "$INPUT_VER" = "latest" ]; then
+      echo "📦 Fetching latest release metadata..."
+      RELEASE_JSON=$(curl -s \
+        -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+        "https://api.github.com/repos/$REPO/releases/latest")
+    else
+      echo "📦 Fetching release metadata for tag $INPUT_VER..."
+      RELEASE_JSON=$(curl -s \
+        -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+        "https://api.github.com/repos/$REPO/releases/tags/$INPUT_VER")
+    fi
+
+    # Extract release tag
+    RELEASE_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
+    echo "✅ Release tag resolved to: $RELEASE_TAG"
+
+    # Expected filename pattern
+    EXPECTED_FILE="${RELEASE_TAG}-release-apis.zip"
+
+    echo "🔍 Looking for asset file: $EXPECTED_FILE"
+
+    # Extract asset ID from release assets json
+    ASSET_ID=$(echo "$RELEASE_JSON" \
+      | jq -r ".assets[] | select(.name == \"$EXPECTED_FILE\") | .id")
+
+    if [ -z "$ASSET_ID" ] || [ "$ASSET_ID" = "null" ]; then
+      echo "❌ ERROR: Could not find asset '$EXPECTED_FILE' in release '$RELEASE_TAG'"
+      echo "Available assets:"
+      echo "$RELEASE_JSON" | jq -r '.assets[].name'
+      exit 1
+    fi
+
+    echo "📄 Found asset ID: $ASSET_ID"
+
+    ASSET_URL="https://api.github.com/repos/$REPO/releases/assets/$ASSET_ID"
+
+    echo "🌐 Download URL (GitHub API): $ASSET_URL"
+
+    # Retry logic: 3 attempts with delay
+    attempt=1
+    while [ $attempt -le 3 ]; do
+      echo "⬇️ Download attempt $attempt..."
+
+      curl -L \
+        -H "Accept: application/octet-stream" \
+        -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+        -o release.zip \
+        "$ASSET_URL" && break
+
+      echo "⚠️ Download failed (attempt $attempt)"
+      attempt=$((attempt + 1))
+      sleep 2
+    done
+
+    if [ ! -f release.zip ]; then
+      echo "❌ ERROR: Failed to download release asset after 3 attempts"
+      exit 1
+    fi
+
+    echo "📁 Download completed. File info:"
+    ls -lh release.zip
+    file release.zip
+
+    # Validate ZIP
+    if ! file release.zip | grep -q "Zip archive data"; then
+      echo "❌ ERROR: Downloaded file is NOT a zip archive"
+      echo "It may be an HTML output from GitHub"
+      cat release.zip | head -20 || true
+      exit 1
+    fi
+
+    echo "📂 Extracting ZIP..."
+    unzip -q release.zip -d release_content
+
+    echo "✅ Extraction finished."
+
+
+
+====================================
+
+
+elif [ -z "$INPUT" ] && [ "$TRIGGERED_BY" == "apim-team" ]; then
+  echo "⚙️ APIM team trigger — including ALL ZIPs from the release"
+
+  FILES=("$API_ROOT"/*.zip)
+
+  if [ ! -e "${FILES[0]}" ]; then
+    echo "❌ No ZIP files found in '$API_ROOT'"
+    exit 1
+  fi
+
+  ZIP_FILES=$(printf "%s\n" "${FILES[@]}" | xargs -n1 basename)
+
+
+
+=====================================
+
+
+
+- name: Deploy API Artifacts
+  id: prepareApiForDeployment
+  working-directory: ${{ env.WORKSPACE }}
+  run: |
+    set -euo pipefail
+
+    # Increase apictl timeout
+    apictl set --http-request-timeout 300000
+
+    # Set credentials based on environment
+    case "${{ github.event.inputs.environment }}" in
+      "Dev")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_DEV }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_DEV }}
+        ;;
+      "SIT")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_SIT }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_SIT }}
+        ;;
+      "SIT-sandbox")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_SIT_SANDBOX }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_SIT_SANDBOX }}
+        ;;
+      "UAT-node-1")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_UAT_NODE_1 }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_UAT_NODE_1 }}
+        ;;
+      "UAT-node-2")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_UAT_NODE_2 }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_UAT_NODE_2 }}
+        ;;
+      "STG-sandbox")
+        APIM_USERNAME=${{ secrets.APIM_USERNAME_STG_SANDBOX }}
+        APIM_PASSWORD=${{ secrets.APIM_PASSWORD_STG_SANDBOX }}
+        ;;
+      *)
+        echo "❌ Unknown environment"
+        exit 1
+        ;;
+    esac
+
+    # Login to APIM
+    apictl login "${{ env.APIM_ENV }}" -u "$APIM_USERNAME" -p "$APIM_PASSWORD" -k --verbose
+
+    echo "📁 APIs to deploy:"
+    echo "${{ env.DEPLOY_APIS }}"
+
+    # Split DEPLOY_APIS by newline
+    IFS=$'\n'
+    for api in $DEPLOY_APIS; do
+      api=$(echo "$api" | xargs)  # trim spaces
+      echo "🚀 Deploying API: $api"
+
+      if apictl import api \
+        -f "${{ env.WORKSPACE }}/release_content/apis/${{ env.APIM_ENV }}/$api" \
+        -e "${{ env.APIM_ENV }}" \
+        -k \
+        --rotate-revision \
+        --verbose; then
+          echo "✅ Imported $api successfully"
+      else
+          echo "❌ Failed to import $api"
+          echo "🔍 Error details logged above"
+          # Continue to next API
+      fi
+
+      sleep 5
+    done
+
+===============
+
+# After building VALID_ZIPS
+if [ ${#VALID_ZIPS[@]} -eq 0 ]; then
+  echo "❌ No valid APIs found in release for input!"
+  exit 1
+fi
+
+# Output newline-separated ZIP files
+ZIP_FILES=$(printf "%s\n" "${VALID_ZIPS[@]}")
+
+echo "✅ Final ZIP files to deploy:"
+echo "$ZIP_FILES"
+
+{
+  echo "zip_files<<EOF"
+  echo "$ZIP_FILES"
+  echo "EOF"
+} >> "$GITHUB_OUTPUT"
+
+
+==================================
+
+
+- name: Determine APIs to deploy
+  working-directory: ${{ env.WORKSPACE }}
+  id: detect_apis
+  run: |
+    set -e
+
+    INPUT="${{ inputs.includeAPIs }}"
+    TRIGGERED_BY="${{ inputs.triggeredBy }}"
+    ENV_PATH="apis/${{ env.APIM_ENV }}"
+    API_ROOT="release_content/${ENV_PATH}"
+
+    if [ ! -d "$API_ROOT" ]; then
+      echo "❌ ERROR: Directory '$API_ROOT' not found in release!"
+      exit 1
+    fi
+
+    echo "📁 Looking for API ZIPs inside: $API_ROOT"
+
+    to_zip() {
+      local api="$1"
+      if [[ "$api" == *.zip ]]; then
+        echo "$api"
+      else
+        echo "${api}.zip"
+      fi
+    }
+
+    if [ -z "$INPUT" ] && [ "$TRIGGERED_BY" == "developer" ]; then
+      echo "❌ Developer trigger but no includeAPIs input — stopping pipeline"
+      exit 1
+
+    elif [ -z "$INPUT" ] && [ "$TRIGGERED_BY" == "apim-team" ]; then
+      echo "⚙️ APIM team trigger — including ALL ZIPs from the release"
+
+      FILES=("$API_ROOT"/*.zip)
+
+      if [ ! -e "${FILES[0]}" ]; then
+        echo "❌ No ZIP files found in '$API_ROOT'"
+        exit 1
+      fi
+
+      ZIP_FILES=$(printf "%s\n" "${FILES[@]##*/}")  # Extract basenames, newline-separated
+
+    else
+      echo "User input APIs: $INPUT"
+      IFS=',' read -r -a ARR <<< "$INPUT"
+
+      VALID_ZIPS=()
+      INVALID_ZIPS=()
+
+      for api in "${ARR[@]}"; do
+        api=$(echo "$api" | xargs)  # trim spaces
+        zip_file=$(to_zip "$api")
+
+        if [ -f "$API_ROOT/$zip_file" ]; then
+          VALID_ZIPS+=("$zip_file")
+        else
+          INVALID_ZIPS+=("$zip_file")
+        fi
+      done
+
+      if [ ${#INVALID_ZIPS[@]} -ne 0 ]; then
+        echo "⚠️ WARNING: These ZIP files do NOT exist in the release: ${INVALID_ZIPS[*]}"
+      fi
+
+      if [ ${#VALID_ZIPS[@]} -eq 0 ]; then
+        echo "❌ No valid APIs found in release for input!"
+        exit 1
+      fi
+
+      ZIP_FILES=$(printf "%s\n" "${VALID_ZIPS[@]}")  # newline-separated
+    fi
+
+    echo "✅ Final ZIP files to deploy:"
+    echo "$ZIP_FILES"
+
+    # Export as workflow output
+    {
+      echo "zip_files<<EOF"
+      echo "$ZIP_FILES"
+      echo "EOF"
+    } >> "$GITHUB_OUTPUT"
+
+
+
+==========================================================
+
+
+pre-deploy-notify:
+  name: Notify Deployment Status
+  runs-on: ubuntu-latest
+  needs:
+    - determine_apis
+    - validate-api-artifacts
+  if: always()
+  env:
+    TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+    DEPLOY_APIS: ${{ needs.determine_apis.outputs.apis-to-deploy }}
+    RELEASE_VERSION: ${{ inputs.releaseVersion }}
+   
+  steps:
+    - name: Notify Deployment Status
+      run: |
+
+        echo "${{ env.DEPLOY_APIS }}"
+
+        set -euo pipefail
+        TITLE=""
+        COLOR=""
+        PASSED_JOBS=""
+        FAILED_JOBS=""
+        SKIPPED_JOBS=""
+        OPTIONAL_FAILED_JOBS=""
+
+        prettify() {
+          echo "$1" | sed -E 's/([a-z])([A-Z])/\1 \2/g'
+        }
+
+        pad_right() {
+          printf "%-30s" "$1"
+        }
+
+        NEEDS_JSON='${{ toJson(needs) }}'
+
+        echo "Fetching job results..."
+        for job in $(jq -r 'keys[]' <<< "$NEEDS_JSON"); do
+          RESULT=$(jq -r ".\"$job\".result" <<< "$NEEDS_JSON")
+          JOB_NAME=$(prettify "$job")
+          PADDED_JOB_NAME=$(pad_right "$JOB_NAME")
+
+          if [[ "$RESULT" == "success" ]]; then
+            PASSED_JOBS+="- ✅ $PADDED_JOB_NAME\n"
+          elif [[ "$RESULT" == "failure" ]]; then
+            FAILED_JOBS+="- ❌ $PADDED_JOB_NAME\n"
+          else
+            SKIPPED_JOBS+="- ⚠️ $PADDED_JOB_NAME\n"
+          fi
+        done
+
+        if [[ -z "$FAILED_JOBS" && -z "$SKIPPED_JOBS" ]]; then
+          TITLE="✅ Pre-Deployment Verification: Success | Deployment Ready"
+          COLOR="2E8B57"
+        else
+          TITLE="❌ Pre-Deployment Verification: Failed | Deployment Blocked"
+          COLOR="B22222"
+        fi
+
+        FACTS="[ \
+          {\"name\":\"📋 Workflow:\", \"value\":\"${{ github.workflow }}\"}, \
+          {\"name\":\"🌿 Branch:\", \"value\":\"${{ github.ref_name }}\"}, \
+          {\"name\":\"🔗 Commit:\", \"value\":\"${{ github.sha }}\"}, \
+          {\"name\":\"👤 Initiated By:\", \"value\":\"${{ github.actor }}\"}, \
+          {\"name\":\"🏷️ Release Version:\", \"value\":\"${{ env.RELEASE_VERSION }}\"}, \
+          {\"name\":\"📂 APIs to Deploy:\", \"value\":\"\"}, \
+          {\"name\":\"\", \"value\":\"$(echo -e "${{ env.DEPLOY_APIS }}" | sed 's/"/\\"/g')\"} \
+        "
+
+        [[ -n "$PASSED_JOBS" ]] && FACTS+=", {\"name\":\"✅ Passed Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$PASSED_JOBS" | sed 's/"/\\"/g')\"}"
+        [[ -n "$FAILED_JOBS" ]] && FACTS+=", {\"name\":\"❌ Failed Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$FAILED_JOBS" | sed 's/"/\\"/g')\"}"
+        [[ -n "$SKIPPED_JOBS" ]] && FACTS+=", {\"name\":\"⚠️ Skipped Jobs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$SKIPPED_JOBS" | sed 's/"/\\"/g')\"}"
+        [[ -n "$OPTIONAL_FAILED_JOBS" ]] && FACTS+=", {\"name\":\"❌ Failed (Optional)\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$OPTIONAL_FAILED_JOBS" | sed 's/"/\\"/g')\"}"
+
+        FACTS+="]"
+
+        JSON_PAYLOAD=$(cat <<EOF
+        {
+          "@type": "MessageCard",
+          "@context": "https://schema.org/extensions",
+          "summary": "$TITLE",
+          "themeColor": "$COLOR",
+          "title": "$TITLE",
+          "sections": [
+            {
+              "activityTitle": "**Repository: ${{ github.repository }}**",
+              "facts": $FACTS
+            }
+          ]
+        }
+        EOF
+        )
+
+        curl -s -f -H 'Content-Type: application/json' \
+          -d "$JSON_PAYLOAD" \
+          "${{ env.TEAMS_WEBHOOK_URL }}"
+
+######### API Category
+
+- name: Extract API Categories from each API ZIP
+  id: extract_categories
+  shell: bash
+  run: |
+    API_PATH="release_content/apis/${{ env.APIM_ENV }}"
+
+    echo "Scanning APIs in: $API_PATH"
+    echo ""
+
+    for ZIP in "$API_PATH"/*.zip; do
+      echo "---- Processing: $ZIP ----"
+
+      # 1. Create temp folder based on zip name (without .zip)
+      FOLDER="${ZIP%.zip}"
+      mkdir -p "$FOLDER"
+
+      # 2. Extract ZIP quietly
+      unzip -q "$ZIP" -d "$FOLDER"
+
+      # 3. Locate api.yaml inside extracted structure
+      API_YAML=$(find "$FOLDER" -type f -name "api.yaml" | head -1)
+
+      if [ -z "$API_YAML" ]; then
+        echo "❌ api.yaml NOT FOUND in $ZIP"
+        continue
+      fi
+
+      echo "Found api.yaml: $API_YAML"
+
+      # 4. Extract category
+      CATEGORY=$(grep -A1 "categories:" "$API_YAML" | grep "-" | sed 's/^[[:space:]]*-\s*//')
+
+      echo "API Category: $CATEGORY"
+      echo ""
+
+    done
+
+
+=================================
+
+
+
+- name: Extract API Categories from each API ZIP
+  id: extract_categories
+  shell: bash
+  run: |
+    cd "${{ env.WORKSPACE }}"
+    pwd
+
+    API_PATH="release_content/apis/${{ env.APIM_ENV }}"
+
+    echo "Scanning APIs in: $API_PATH"
+    echo ""
+
+    for ZIP in "$API_PATH"/*.zip; do
+      echo "---- Processing: $ZIP ----"
+
+      FOLDER="${ZIP%.zip}"
+      mkdir -p "$FOLDER"
+      unzip -q "$ZIP" -d "$FOLDER"
+
+      API_YAML=$(find "$FOLDER" -type f -name "api.yaml" | head -1)
+
+      if [ -z "$API_YAML" ]; then
+        echo "❌ api.yaml NOT FOUND in $ZIP"
+        continue
+      fi
+
+      echo "Found api.yaml: $API_YAML"
+      CATEGORY=$(grep -A1 "categories:" "$API_YAML" | grep "-" | sed 's/^[[:space:]]*-\s*//')
+      echo "API Category: $CATEGORY"
+      echo ""
+    done

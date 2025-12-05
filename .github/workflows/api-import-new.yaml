@@ -960,3 +960,42 @@ pre-deploy-notify:
         curl -s -f -H 'Content-Type: application/json' \
           -d "$JSON_PAYLOAD" \
           "${{ env.TEAMS_WEBHOOK_URL }}"
+
+######### API Category
+
+- name: Extract API Categories from each API ZIP
+  id: extract_categories
+  shell: bash
+  run: |
+    API_PATH="release_content/apis/${{ env.APIM_ENV }}"
+
+    echo "Scanning APIs in: $API_PATH"
+    echo ""
+
+    for ZIP in "$API_PATH"/*.zip; do
+      echo "---- Processing: $ZIP ----"
+
+      # 1. Create temp folder based on zip name (without .zip)
+      FOLDER="${ZIP%.zip}"
+      mkdir -p "$FOLDER"
+
+      # 2. Extract ZIP quietly
+      unzip -q "$ZIP" -d "$FOLDER"
+
+      # 3. Locate api.yaml inside extracted structure
+      API_YAML=$(find "$FOLDER" -type f -name "api.yaml" | head -1)
+
+      if [ -z "$API_YAML" ]; then
+        echo "❌ api.yaml NOT FOUND in $ZIP"
+        continue
+      fi
+
+      echo "Found api.yaml: $API_YAML"
+
+      # 4. Extract category
+      CATEGORY=$(grep -A1 "categories:" "$API_YAML" | grep "-" | sed 's/^[[:space:]]*-\s*//')
+
+      echo "API Category: $CATEGORY"
+      echo ""
+
+    done

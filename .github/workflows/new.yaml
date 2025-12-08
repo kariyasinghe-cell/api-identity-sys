@@ -254,31 +254,43 @@ jobs:
 
       - name: Verify apictl version
         run: apictl version
-
+        
       - name: Extract & Validate API Categories in WSO2 APIM
         id: extract_categories
         working-directory: ${{ env.WORKSPACE }}
         shell: bash
         run: |
-          # Map APIM_ENV to corresponding secret
+          # Map APIM_ENV to corresponding secrets
           case "${{ env.APIM_ENV }}" in
             Dev)
               APIM_HOST="${{ secrets.APIM_ENV_URL_DEV }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_DEV }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_DEV }}"
               ;;
             SIT)
               APIM_HOST="${{ secrets.APIM_ENV_URL_SIT }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_SIT }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_SIT }}"
               ;;
             SIT-sandbox)
-              APIM_HOST="${{ secrets.APIM_ENV_URL_SIT-sandbox }}"
+              APIM_HOST="${{ secrets.APIM_ENV_URL_SIT_SANDBOX }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_SIT_SANDBOX }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_SIT_SANDBOX }}"
               ;;
             UAT-node-1)
-              APIM_HOST="${{ secrets.APIM_ENV_URL_UAT-node-1 }}"
+              APIM_HOST="${{ secrets.APIM_ENV_URL_UAT_NODE_1 }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_UAT_NODE_1 }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_UAT_NODE_1 }}"
               ;;
             UAT-node-2)
-              APIM_HOST="${{ secrets.APIM_ENV_URL_UAT-node-2 }}"
+              APIM_HOST="${{ secrets.APIM_ENV_URL_UAT_NODE_2 }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_UAT_NODE_2 }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_UAT_NODE_2 }}"
               ;;
             STG-sandbox)
-              APIM_HOST="${{ secrets.APIM_ENV_URL_STG-sandbox }}"
+              APIM_HOST="${{ secrets.APIM_ENV_URL_STG_SANDBOX }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_STG_SANDBOX }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_STG_SANDBOX }}"
               ;;
             *)
               echo "❌ Unknown APIM_ENV: ${{ env.APIM_ENV }}"
@@ -286,16 +298,14 @@ jobs:
               ;;
           esac
 
-          echo "Using APIM_HOST: $APIM_HOST for environment ${{ env.APIM_ENV }}"
+          echo "Logging in to APIM environment ${{ env.APIM_ENV }}..."
+          apictl login "${{ env.APIM_ENV }}" -u "$APIM_USERNAME" -p "$APIM_PASSWORD" -k --verbose
 
           API_PATH="release_content/apis/${{ env.APIM_ENV }}"
           echo "📂 Scanning APIs in: $API_PATH"
           echo ""
 
-          # Endpoint for API Category Administration
-          CATEGORY_API="https://${APIM_HOST}/api/am/admin/v1/api-categories"
-
-          # A set to avoid duplicate creations
+          # A set to avoid duplicate category processing
           declare -A FOUND_CATEGORIES
 
           for ZIP in "$API_PATH"/*.zip; do
@@ -315,7 +325,6 @@ jobs:
 
             echo "✔ Found api.yaml at: $API_YAML"
 
-            # Extract all categories listed under "categories:"
             CATEGORIES=$(yq eval '.categories[]' "$API_YAML" 2>/dev/null)
 
             if [ -z "$CATEGORIES" ]; then
@@ -328,42 +337,30 @@ jobs:
             echo "$CATEGORIES"
             echo ""
 
-            # Validate each category
             for CATEGORY in $CATEGORIES; do
-
-              # Avoid processing same category twice
               if [[ ${FOUND_CATEGORIES[$CATEGORY]} == 1 ]]; then
                 echo "➡ Category '$CATEGORY' already validated earlier. Skipping."
                 continue
               fi
 
               echo "🔎 Checking if category '$CATEGORY' exists in WSO2 APIM..."
-
-              # Check via GET
-              EXISTS=$(curl -s -k -H "Authorization: Bearer $TOKEN" \
-                          "$CATEGORY_API?limit=1000" | yq eval ".list[] | select(.name == \"$CATEGORY\") | .name" -)
+              
+              EXISTS=$(apictl get api-categories -e "${{ env.APIM_ENV }}" -k --verbose \
+                      | yq eval ".list[] | select(.name == \"$CATEGORY\") | .name" -)
 
               if [[ "$EXISTS" == "$CATEGORY" ]]; then
                 echo "✔ Category '$CATEGORY' already exists in APIM."
                 FOUND_CATEGORIES[$CATEGORY]=1
               else
-                echo "⚠️ Category '$CATEGORY' NOT FOUND!"
-                echo "🟢 Creating API category '$CATEGORY'..."
+                echo "⚠️ Category '$CATEGORY' NOT FOUND! Creating..."
+                apictl add api-category -n "$CATEGORY" -d "Auto-created via CI/CD pipeline" \
+                      -e "${{ env.APIM_ENV }}" -k --verbose
 
-                CREATE_PAYLOAD=$(jq -n --arg name "$CATEGORY" \
-                  '{name: $name, description: "Auto-created via CI/CD pipeline"}')
-
-                CREATE_RESPONSE=$(curl -s -k -X POST "$CATEGORY_API" \
-                  -H "Authorization: Bearer $TOKEN" \
-                  -H "Content-Type: application/json" \
-                  -d "$CREATE_PAYLOAD")
-
-                if echo "$CREATE_RESPONSE" | grep -q '"id"'; then
+                if [[ $? -eq 0 ]]; then
                   echo "🎉 Category '$CATEGORY' created successfully!"
                   FOUND_CATEGORIES[$CATEGORY]=1
                 else
-                  echo "❌ Failed to create category '$CATEGORY'. API response:"
-                  echo "$CREATE_RESPONSE"
+                  echo "❌ Failed to create category '$CATEGORY'"
                   exit 1
                 fi
               fi
@@ -374,6 +371,7 @@ jobs:
           done
 
           echo "✅ Completed API category validation & creation process."
+
   
   pre-deploy-notify:
     name: Notify Deployment Status
@@ -630,34 +628,40 @@ jobs:
       deployment_status: ${{ steps.set_status.outputs.status }}
       deployment_message: ${{ steps.set_status.outputs.message }}
     steps:
-      - name: Determine APIM Host and Token based on Environment
+      - name: Determine APIM Host, Username, and Password based on Environment
         id: set-apim-vars
         shell: bash
         run: |
           case "${{ env.APIM_ENV }}" in
             Dev)
               APIM_HOST="${{ secrets.APIM_ENV_URL_DEV }}"
-              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_DEV }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_DEV }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_DEV }}"
               ;;
             SIT)
               APIM_HOST="${{ secrets.APIM_ENV_URL_SIT }}"
-              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_SIT }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_SIT }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_SIT }}"
               ;;
             SIT-sandbox)
-              APIM_HOST="${{ secrets.APIM_ENV_URL_SIT-sandbox }}"
-              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_SIT_SANDBOX }}"
+              APIM_HOST="${{ secrets.APIM_ENV_URL_SIT_SANDBOX }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_SIT_SANDBOX }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_SIT_SANDBOX }}"
               ;;
             UAT-node-1)
-              APIM_HOST="${{ secrets.APIM_ENV_URL_UAT-node-1 }}"
-              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_UAT_NODE_1 }}"
+              APIM_HOST="${{ secrets.APIM_ENV_URL_UAT_NODE_1 }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_UAT_NODE_1 }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_UAT_NODE_1 }}"
               ;;
             UAT-node-2)
-              APIM_HOST="${{ secrets.APIM_ENV_URL_UAT-node-2 }}"
-              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_UAT_NODE_2 }}"
+              APIM_HOST="${{ secrets.APIM_ENV_URL_UAT_NODE_2 }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_UAT_NODE_2 }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_UAT_NODE_2 }}"
               ;;
             STG-sandbox)
-              APIM_HOST="${{ secrets.APIM_ENV_URL_STG-sandbox }}"
-              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_STG_SANDBOX }}"
+              APIM_HOST="${{ secrets.APIM_ENV_URL_STG_SANDBOX }}"
+              APIM_USERNAME="${{ secrets.APIM_USERNAME_STG_SANDBOX }}"
+              APIM_PASSWORD="${{ secrets.APIM_PASSWORD_STG_SANDBOX }}"
               ;;
             *)
               echo "❌ Unknown APIM_ENV: ${{ env.APIM_ENV }}"
@@ -666,16 +670,29 @@ jobs:
           esac
 
           echo "APIM_HOST=$APIM_HOST" >> $GITHUB_ENV
-          echo "TOKEN=$TOKEN" >> $GITHUB_ENV
-          echo "Using APIM_HOST: $APIM_HOST and corresponding TOKEN"
+          echo "APIM_USERNAME=$APIM_USERNAME" >> $GITHUB_ENV
+          echo "APIM_PASSWORD=$APIM_PASSWORD" >> $GITHUB_ENV
+          echo "Using APIM_HOST: $APIM_HOST with provided credentials"
+
+      - name: Install apictl
+        run: |
+          WORK_DIR="$RUNNER_WORKSPACE/apictl-4.1.6"
+          mkdir -p "$WORK_DIR"
+          if [ ! -f "$WORK_DIR/apictl/apictl" ]; then
+            cd "$WORK_DIR"
+            wget "https://github.com/wso2/product-apim-tooling/releases/download/v4.1.6/apictl-4.1.6-linux-amd64.tar.gz"
+            tar -xvzf apictl-4.1.6-linux-amd64.tar.gz
+          fi
+          chmod +x "$WORK_DIR/apictl/apictl"
+          echo "$WORK_DIR/apictl" >> $GITHUB_PATH
+
+      - name: Login to APIM
+        run: |
+          apictl login "${{ env.APIM_ENV }}" -u "$APIM_USERNAME" -p "$APIM_PASSWORD" -k --verbose
 
       - name: Verify APIs are Published
         id: set_status
         shell: bash
-        env:
-          APIM_HOST: ${{ env.APIM_HOST }}
-          TOKEN: ${{ env.TOKEN }}
-          DEPLOY_APIS: ${{ env.DEPLOY_APIS }}
         run: |
           IFS=',' read -ra API_LIST <<< "$DEPLOY_APIS"
           FAILED=0
@@ -683,12 +700,8 @@ jobs:
 
           for API_NAME in "${API_LIST[@]}"; do
             echo "🔍 Verifying API: $API_NAME"
-
-            RESPONSE=$(curl -s -k -H "Authorization: Bearer $TOKEN" \
-                        "https://$APIM_HOST/api/am/publisher/v1/apis?query=$API_NAME&limit=100")
-
-            STATUS=$(echo "$RESPONSE" | jq -r '.list[] | select(.name=="'"$API_NAME"'") | .lifeCycleStatus')
-
+            STATUS=$(apictl get api -n "$API_NAME" -e "${{ env.APIM_ENV }}" -k --verbose | jq -r '.list[0].lifeCycleStatus')
+            
             if [[ "$STATUS" == "Published" ]]; then
               echo "✔ API '$API_NAME' is in Published state."
             else
@@ -709,14 +722,13 @@ jobs:
           echo "Deployment status: $DEPLOYMENT_STATUS"
           echo "Deployment message: $MESSAGE"
 
-          # Set outputs for next jobs (Teams notification)
           echo "::set-output name=status::$DEPLOYMENT_STATUS"
           echo "::set-output name=message::$MESSAGE"
 
-          # Fail job if needed
           if [[ $FAILED -eq 1 ]]; then
             exit 1
           fi
+
 
   notify-deployment-status:
     name: Teams Deployment Notification

@@ -626,29 +626,38 @@ jobs:
     env:
       DEPLOY_APIS: ${{ needs.validate-api-artifacts.outputs.DEPLOY_APIS }}
       APIM_ENV: ${{ inputs.environment }}
+    outputs:
+      deployment_status: ${{ steps.set_status.outputs.status }}
+      deployment_message: ${{ steps.set_status.outputs.message }}
     steps:
-      - name: Determine APIM Host based on Environment
-        id: set-apim-host
+      - name: Determine APIM Host and Token based on Environment
+        id: set-apim-vars
         shell: bash
         run: |
           case "${{ env.APIM_ENV }}" in
             Dev)
               APIM_HOST="${{ secrets.APIM_ENV_URL_DEV }}"
+              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_DEV }}"
               ;;
             SIT)
               APIM_HOST="${{ secrets.APIM_ENV_URL_SIT }}"
+              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_SIT }}"
               ;;
             SIT-sandbox)
               APIM_HOST="${{ secrets.APIM_ENV_URL_SIT-sandbox }}"
+              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_SIT_SANDBOX }}"
               ;;
             UAT-node-1)
               APIM_HOST="${{ secrets.APIM_ENV_URL_UAT-node-1 }}"
+              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_UAT_NODE_1 }}"
               ;;
             UAT-node-2)
               APIM_HOST="${{ secrets.APIM_ENV_URL_UAT-node-2 }}"
+              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_UAT_NODE_2 }}"
               ;;
             STG-sandbox)
               APIM_HOST="${{ secrets.APIM_ENV_URL_STG-sandbox }}"
+              TOKEN="${{ secrets.APIM_ADMIN_TOKEN_STG_SANDBOX }}"
               ;;
             *)
               echo "❌ Unknown APIM_ENV: ${{ env.APIM_ENV }}"
@@ -657,51 +666,27 @@ jobs:
           esac
 
           echo "APIM_HOST=$APIM_HOST" >> $GITHUB_ENV
-          echo "Using APIM_HOST: $APIM_HOST"
+          echo "TOKEN=$TOKEN" >> $GITHUB_ENV
+          echo "Using APIM_HOST: $APIM_HOST and corresponding TOKEN"
 
       - name: Verify APIs are Published
+        id: set_status
         shell: bash
         env:
           APIM_HOST: ${{ env.APIM_HOST }}
+          TOKEN: ${{ env.TOKEN }}
           DEPLOY_APIS: ${{ env.DEPLOY_APIS }}
         run: |
-
-          case "${{ env.APIM_ENV }}" in
-            Dev)
-              TOKEN="${{ secrets.TOKEN_DEV }}"
-              ;;
-            SIT)
-              TOKEN="${{ secrets.TOKEN_SIT }}"
-              ;;
-            SIT-sandbox)
-              TOKEN="${{ secrets.TOKEN_SIT-sandbox }}"
-              ;;
-            UAT-node-1)
-              TOKEN="${{ secrets.TOKEN_UAT-node-1 }}"
-              ;;
-            UAT-node-2)
-              TOKEN="${{ secrets.TOKEN_UAT-node-2 }}"
-              ;;
-            STG-sandbox)
-              TOKEN="${{ secrets.TOKEN_STG-sandbox }}"
-              ;;
-            *)
-              echo "❌ Unknown APIM_ENV: ${{ env.APIM_ENV }}"
-              exit 1
-              ;;
-          esac
-
           IFS=',' read -ra API_LIST <<< "$DEPLOY_APIS"
           FAILED=0
+          MESSAGE=""
 
           for API_NAME in "${API_LIST[@]}"; do
             echo "🔍 Verifying API: $API_NAME"
 
-            # Get API details
             RESPONSE=$(curl -s -k -H "Authorization: Bearer $TOKEN" \
                         "https://$APIM_HOST/api/am/publisher/v1/apis?query=$API_NAME&limit=100")
 
-            # Extract lifecycle status using yq/jq
             STATUS=$(echo "$RESPONSE" | jq -r '.list[] | select(.name=="'"$API_NAME"'") | .lifeCycleStatus')
 
             if [[ "$STATUS" == "Published" ]]; then
@@ -709,12 +694,77 @@ jobs:
             else
               echo "❌ API '$API_NAME' is NOT Published. Current state: $STATUS"
               FAILED=1
+              MESSAGE+="API '$API_NAME' status: $STATUS\n"
             fi
           done
 
           if [[ $FAILED -eq 1 ]]; then
-            echo "❌ One or more APIs are not published!"
+            DEPLOYMENT_STATUS="Failed"
+            MESSAGE="One or more APIs are not published:\n$MESSAGE"
+          else
+            DEPLOYMENT_STATUS="Success"
+            MESSAGE="All deployed APIs are in Published state."
+          fi
+
+          echo "Deployment status: $DEPLOYMENT_STATUS"
+          echo "Deployment message: $MESSAGE"
+
+          # Set outputs for next jobs (Teams notification)
+          echo "::set-output name=status::$DEPLOYMENT_STATUS"
+          echo "::set-output name=message::$MESSAGE"
+
+          # Fail job if needed
+          if [[ $FAILED -eq 1 ]]; then
             exit 1
           fi
 
-          echo "✅ All deployed APIs are in Published state."
+  notify-deployment-status:
+    name: Teams Deployment Notification
+    runs-on: ubuntu-latest
+    needs:
+      - verify-deployed-apis  # or validate-api-artifacts if you want earlier notification
+    steps:
+      - name: Set Deployment Status
+        id: set_status
+        run: |
+          # Determine deployment status from previous job
+          if [ "${{ needs.verify-deployed-apis.conclusion }}" == "success" ]; then
+            STATUS="Success"
+            COLOR="00FF00"
+            MESSAGE="All deployed APIs are in Published state."
+          else
+            STATUS="Failed"
+            COLOR="FF0000"
+            MESSAGE="One or more APIs failed to reach Published state."
+          fi
+
+          echo "STATUS=$STATUS" >> $GITHUB_ENV
+          echo "COLOR=$COLOR" >> $GITHUB_ENV
+          echo "MESSAGE=$MESSAGE" >> $GITHUB_ENV
+
+      - name: Send Teams Notification
+        shell: bash
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          STATUS: ${{ env.STATUS }}
+          COLOR: ${{ env.COLOR }}
+          MESSAGE: ${{ env.MESSAGE }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg title "API Deployment Status: $STATUS" \
+            --arg text "$MESSAGE" \
+            --arg color "$COLOR" \
+            '{
+              "@type": "MessageCard",
+              "@context": "http://schema.org/extensions",
+              "themeColor": $color,
+              "summary": $title,
+              "sections": [{
+                "activityTitle": $title,
+                "text": $text
+              }]
+            }')
+
+          echo "Sending Teams notification..."
+          curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
+          echo "Notification sent."

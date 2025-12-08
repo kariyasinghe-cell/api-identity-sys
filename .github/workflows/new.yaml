@@ -812,3 +812,9 @@ jobs:
           echo "Sending Teams notification..."
           curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
           echo "Notification sent."
+
+
+===============
+
+
+https://apim.docs.wso2.com/en/3.1.0/develop/customizations/customizing-the-developer-portal/customize-api-listing/categorizing-and-grouping-apis/api-category-based-grouping/

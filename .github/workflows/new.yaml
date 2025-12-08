@@ -254,6 +254,23 @@ jobs:
 
       - name: Verify apictl version
         run: apictl version
+
+      - name: Install yq
+        working-directory: ${{ env.WORKSPACE }}
+        run: |
+          echo "Installing yq locally..."
+          YQ_DIR="$RUNNER_WORKSPACE/yq"
+          mkdir -p "$YQ_DIR"
+      
+          if [ ! -f "$YQ_DIR/yq" ]; then
+            wget -O "$YQ_DIR/yq" https://github.com/mikefarah/yq/releases/download/v4.43.2/yq_linux_amd64
+            chmod +x "$YQ_DIR/yq"
+          fi
+      
+          # Add local yq to PATH for subsequent steps
+          echo "$YQ_DIR" >> $GITHUB_PATH
+          echo "yq path added: $YQ_DIR"
+          echo "yq version: $($YQ_DIR/yq --version)"
         
       - name: Extract & Validate API Categories in WSO2 APIM
         id: extract_categories

@@ -363,8 +363,18 @@ jobs:
               fi
       
               echo "🔎 Checking if category '$CATEGORY' exists in WSO2 APIM..."
-              EXISTS=$(curl -s -k -u "$BASIC_AUTH" "$CATEGORY_API?limit=1000" \
-                       | yq eval ".list[] | select(.name == \"$CATEGORY\") | .name" -)
+              # Get access token using password grant
+              TOKEN_RESPONSE=$(curl -s -k -X POST "https://${APIM_HOST}/oauth2/token" \
+                -H "Content-Type: application/x-www-form-urlencoded" \
+                -u "admin:admin" \
+                -d "grant_type=password&username=admin&password=admin&scope=apim:admin")
+              
+              TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token')
+              
+              # Now call the API with the token
+              EXISTS=$(curl -s -k -H "Authorization: Bearer $TOKEN" \
+                "$CATEGORY_API?limit=1000" \
+                | yq eval ".list[] | select(.name == \"$CATEGORY\") | .name" -)
       
               if [[ "$EXISTS" == "$CATEGORY" ]]; then
                 echo "✔ Category '$CATEGORY' already exists in APIM."

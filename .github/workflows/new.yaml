@@ -272,6 +272,7 @@ jobs:
           echo "yq path added: $YQ_DIR"
           echo "yq version: $($YQ_DIR/yq --version)"
         
+
       - name: Extract & Validate API Categories in WSO2 APIM
         id: extract_categories
         working-directory: ${{ env.WORKSPACE }}
@@ -314,79 +315,83 @@ jobs:
               exit 1
               ;;
           esac
-
-          echo "Logging in to APIM environment ${{ env.APIM_ENV }}..."
-          apictl login "${{ env.APIM_ENV }}" -u "$APIM_USERNAME" -p "$APIM_PASSWORD" -k --verbose
-
+      
+          echo "📂 Scanning APIs in: release_content/apis/${{ env.APIM_ENV }}"
           API_PATH="release_content/apis/${{ env.APIM_ENV }}"
-          echo "📂 Scanning APIs in: $API_PATH"
-          echo ""
-
-          # A set to avoid duplicate category processing
+      
+          # Endpoint for API Category Administration
+          CATEGORY_API="https://${APIM_HOST}/api/am/admin/v1/api-categories"
+          BASIC_AUTH="$APIM_USERNAME:$APIM_PASSWORD"
+      
+          # Track processed categories
           declare -A FOUND_CATEGORIES
-
+      
           for ZIP in "$API_PATH"/*.zip; do
             echo "──────────────────────────────────────────"
             echo "🔍 Processing: $ZIP"
-
+      
             FOLDER="${ZIP%.zip}"
             mkdir -p "$FOLDER"
             unzip -q "$ZIP" -d "$FOLDER"
-
+      
             API_YAML=$(find "$FOLDER" -type f -name "api.yaml" | head -1)
-
+      
             if [ -z "$API_YAML" ]; then
               echo "❌ api.yaml NOT FOUND inside $ZIP"
               continue
             fi
-
+      
             echo "✔ Found api.yaml at: $API_YAML"
-
-            CATEGORIES=$(yq eval '.categories[]' "$API_YAML" 2>/dev/null)
-
+      
+            # Correct yq path: categories are under 'data'
+            CATEGORIES=$(yq eval '.data.categories[]' "$API_YAML" 2>/dev/null)
+      
             if [ -z "$CATEGORIES" ]; then
               echo "⚠️ No categories defined for this API"
               echo ""
               continue
             fi
-
+      
             echo "📌 Categories found:"
             echo "$CATEGORIES"
             echo ""
-
+      
             for CATEGORY in $CATEGORIES; do
               if [[ ${FOUND_CATEGORIES[$CATEGORY]} == 1 ]]; then
                 echo "➡ Category '$CATEGORY' already validated earlier. Skipping."
                 continue
               fi
-
+      
               echo "🔎 Checking if category '$CATEGORY' exists in WSO2 APIM..."
-              
-              EXISTS=$(apictl get api-categories -e "${{ env.APIM_ENV }}" -k --verbose \
-                      | yq eval ".list[] | select(.name == \"$CATEGORY\") | .name" -)
-
+              EXISTS=$(curl -s -k -u "$BASIC_AUTH" "$CATEGORY_API?limit=1000" \
+                       | yq eval ".list[] | select(.name == \"$CATEGORY\") | .name" -)
+      
               if [[ "$EXISTS" == "$CATEGORY" ]]; then
                 echo "✔ Category '$CATEGORY' already exists in APIM."
                 FOUND_CATEGORIES[$CATEGORY]=1
               else
                 echo "⚠️ Category '$CATEGORY' NOT FOUND! Creating..."
-                apictl add api-category -n "$CATEGORY" -d "Auto-created via CI/CD pipeline" \
-                      -e "${{ env.APIM_ENV }}" -k --verbose
-
-                if [[ $? -eq 0 ]]; then
+                CREATE_PAYLOAD=$(jq -n --arg name "$CATEGORY" \
+                  '{name: $name, description: "Auto-created via CI/CD pipeline"}')
+                
+                CREATE_RESPONSE=$(curl -s -k -u "$BASIC_AUTH" -X POST "$CATEGORY_API" \
+                                  -H "Content-Type: application/json" \
+                                  -d "$CREATE_PAYLOAD")
+                
+                if echo "$CREATE_RESPONSE" | grep -q '"id"'; then
                   echo "🎉 Category '$CATEGORY' created successfully!"
                   FOUND_CATEGORIES[$CATEGORY]=1
                 else
-                  echo "❌ Failed to create category '$CATEGORY'"
+                  echo "❌ Failed to create category '$CATEGORY'. Response:"
+                  echo "$CREATE_RESPONSE"
                   exit 1
                 fi
               fi
-
+      
               echo ""
             done
-
           done
-
+      
           echo "✅ Completed API category validation & creation process."
 
   

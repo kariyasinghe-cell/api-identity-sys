@@ -271,7 +271,6 @@ jobs:
           echo "$YQ_DIR" >> $GITHUB_PATH
           echo "yq path added: $YQ_DIR"
           echo "yq version: $($YQ_DIR/yq --version)"
-        
 
       - name: Extract & Validate API Categories in WSO2 APIM
         id: extract_categories
@@ -316,14 +315,14 @@ jobs:
               ;;
           esac
       
-          echo "📂 Scanning APIs in: release_content/apis/${{ env.APIM_ENV }}"
+          # Encode username:password in base64 for basic auth
+          AUTH_HEADER=$(echo -n "$APIM_USERNAME:$APIM_PASSWORD" | base64)
+      
           API_PATH="release_content/apis/${{ env.APIM_ENV }}"
+          echo "📂 Scanning APIs in: $API_PATH"
+          echo ""
       
-          # Endpoint for API Category Administration
-          CATEGORY_API="https://${APIM_HOST}/api/am/admin/v1/api-categories"
-          BASIC_AUTH="$APIM_USERNAME:$APIM_PASSWORD"
-      
-          # Track processed categories
+          # A set to avoid duplicate category processing
           declare -A FOUND_CATEGORIES
       
           for ZIP in "$API_PATH"/*.zip; do
@@ -343,8 +342,7 @@ jobs:
       
             echo "✔ Found api.yaml at: $API_YAML"
       
-            # Correct yq path: categories are under 'data'
-            CATEGORIES=$(yq eval '.data.categories[]' "$API_YAML" 2>/dev/null)
+            CATEGORIES=$(yq eval '.categories[]' "$API_YAML" 2>/dev/null)
       
             if [ -z "$CATEGORIES" ]; then
               echo "⚠️ No categories defined for this API"
@@ -363,48 +361,41 @@ jobs:
               fi
       
               echo "🔎 Checking if category '$CATEGORY' exists in WSO2 APIM..."
-              # Get access token using password grant
-              TOKEN_RESPONSE=$(curl -s -k -X POST "https://${APIM_HOST}/oauth2/token" \
-                -H "Content-Type: application/x-www-form-urlencoded" \
-                -u "admin:admin" \
-                -d "grant_type=password&username=admin&password=admin&scope=apim:admin")
               
-              TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token')
-              
-              # Now call the API with the token
-              EXISTS=$(curl -s -k -H "Authorization: Bearer $TOKEN" \
-                "$CATEGORY_API?limit=1000" \
-                | yq eval ".list[] | select(.name == \"$CATEGORY\") | .name" -)
+              EXISTS=$(curl -s -X GET "$APIM_HOST/api/am/admin/api-categories" \
+                        -H "accept: application/json" \
+                        -H "Authorization: Basic $AUTH_HEADER" \
+                        | jq -r ".list[] | select(.name==\"$CATEGORY\") | .name")
       
               if [[ "$EXISTS" == "$CATEGORY" ]]; then
                 echo "✔ Category '$CATEGORY' already exists in APIM."
                 FOUND_CATEGORIES[$CATEGORY]=1
               else
                 echo "⚠️ Category '$CATEGORY' NOT FOUND! Creating..."
-                CREATE_PAYLOAD=$(jq -n --arg name "$CATEGORY" \
-                  '{name: $name, description: "Auto-created via CI/CD pipeline"}')
                 
-                CREATE_RESPONSE=$(curl -s -k -u "$BASIC_AUTH" -X POST "$CATEGORY_API" \
-                                  -H "Content-Type: application/json" \
-                                  -d "$CREATE_PAYLOAD")
-                
-                if echo "$CREATE_RESPONSE" | grep -q '"id"'; then
+                CREATE_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$APIM_HOST/api/am/admin/api-categories" \
+                                    -H "accept: application/json" \
+                                    -H "Content-Type: application/json" \
+                                    -H "Authorization: Basic $AUTH_HEADER" \
+                                    -d "{\"name\": \"$CATEGORY\", \"description\": \"Created by CI/CD\"}")
+      
+                if [[ "$CREATE_RESPONSE" == "201" ]]; then
                   echo "🎉 Category '$CATEGORY' created successfully!"
                   FOUND_CATEGORIES[$CATEGORY]=1
                 else
-                  echo "❌ Failed to create category '$CATEGORY'. Response:"
-                  echo "$CREATE_RESPONSE"
+                  echo "❌ Failed to create category '$CATEGORY' (HTTP code: $CREATE_RESPONSE)"
                   exit 1
                 fi
               fi
       
               echo ""
             done
+      
           done
       
           echo "✅ Completed API category validation & creation process."
 
-  
+        
   pre-deploy-notify:
     name: Notify Deployment Status
     runs-on: ubuntu-latest

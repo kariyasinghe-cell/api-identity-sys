@@ -259,8 +259,6 @@ jobs:
         id: extract_categories
         working-directory: ${{ env.WORKSPACE }}
         shell: bash
-        env:
-          TOKEN: ${{ secrets.APIM_ADMIN_TOKEN }}
         run: |
           # Map APIM_ENV to corresponding secret
           case "${{ env.APIM_ENV }}" in
@@ -517,21 +515,27 @@ jobs:
           case "${{ github.event.inputs.environment }}" in
             "Dev")
               APIM_ENV_URL=${{ secrets.APIM_ENV_URL_DEV }}
+              TOKEN=${{ secrets.TOKEN_DEV }}
               ;;
             "SIT")
               APIM_ENV_URL=${{ secrets.APIM_ENV_URL_SIT }}
+              TOKEN=${{ secrets.TOKEN_SIT }}
               ;;
             "SIT-sandbox")
               APIM_ENV_URL=${{ secrets.APIM_ENV_URL_SIT_SANDBOX }}
+              TOKEN=${{ secrets.TOKEN_SIT_SANDBOX }}
               ;;
             "UAT-node-1")
                APIM_ENV_URL=${{ secrets.APIM_ENV_URL_UAT_NODE_1 }}
+               TOKEN=${{ secrets.TOKEN_UAT_NODE_1 }}
                ;;
             "UAT-node-2")
               APIM_ENV_URL=${{ secrets.APIM_ENV_URL_UAT_NODE_2 }}
+              TOKEN=${{ secrets.TOKEN_UAT_NODE_2 }}
               ;;
             "STG-sandbox")
               APIM_ENV_URL=${{ secrets.APIM_ENV_URL_STG_SANDBOX }}
+              TOKEN=${{ secrets.TOKEN_STG_SANDBOX }}
               ;;
             *)
               echo "❌ Unknown environment"
@@ -613,3 +617,104 @@ jobs:
      
             sleep 5
           done
+
+  verify-deployed-apis:
+    name: Verify Deployed APIs are Published
+    runs-on: [self-hosted, linux]
+    needs:
+      - validate-api-artifacts
+    env:
+      DEPLOY_APIS: ${{ needs.validate-api-artifacts.outputs.DEPLOY_APIS }}
+      APIM_ENV: ${{ inputs.environment }}
+    steps:
+      - name: Determine APIM Host based on Environment
+        id: set-apim-host
+        shell: bash
+        run: |
+          case "${{ env.APIM_ENV }}" in
+            Dev)
+              APIM_HOST="${{ secrets.APIM_ENV_URL_DEV }}"
+              ;;
+            SIT)
+              APIM_HOST="${{ secrets.APIM_ENV_URL_SIT }}"
+              ;;
+            SIT-sandbox)
+              APIM_HOST="${{ secrets.APIM_ENV_URL_SIT-sandbox }}"
+              ;;
+            UAT-node-1)
+              APIM_HOST="${{ secrets.APIM_ENV_URL_UAT-node-1 }}"
+              ;;
+            UAT-node-2)
+              APIM_HOST="${{ secrets.APIM_ENV_URL_UAT-node-2 }}"
+              ;;
+            STG-sandbox)
+              APIM_HOST="${{ secrets.APIM_ENV_URL_STG-sandbox }}"
+              ;;
+            *)
+              echo "❌ Unknown APIM_ENV: ${{ env.APIM_ENV }}"
+              exit 1
+              ;;
+          esac
+
+          echo "APIM_HOST=$APIM_HOST" >> $GITHUB_ENV
+          echo "Using APIM_HOST: $APIM_HOST"
+
+      - name: Verify APIs are Published
+        shell: bash
+        env:
+          APIM_HOST: ${{ env.APIM_HOST }}
+          DEPLOY_APIS: ${{ env.DEPLOY_APIS }}
+        run: |
+
+          case "${{ env.APIM_ENV }}" in
+            Dev)
+              TOKEN="${{ secrets.TOKEN_DEV }}"
+              ;;
+            SIT)
+              TOKEN="${{ secrets.TOKEN_SIT }}"
+              ;;
+            SIT-sandbox)
+              TOKEN="${{ secrets.TOKEN_SIT-sandbox }}"
+              ;;
+            UAT-node-1)
+              TOKEN="${{ secrets.TOKEN_UAT-node-1 }}"
+              ;;
+            UAT-node-2)
+              TOKEN="${{ secrets.TOKEN_UAT-node-2 }}"
+              ;;
+            STG-sandbox)
+              TOKEN="${{ secrets.TOKEN_STG-sandbox }}"
+              ;;
+            *)
+              echo "❌ Unknown APIM_ENV: ${{ env.APIM_ENV }}"
+              exit 1
+              ;;
+          esac
+
+          IFS=',' read -ra API_LIST <<< "$DEPLOY_APIS"
+          FAILED=0
+
+          for API_NAME in "${API_LIST[@]}"; do
+            echo "🔍 Verifying API: $API_NAME"
+
+            # Get API details
+            RESPONSE=$(curl -s -k -H "Authorization: Bearer $TOKEN" \
+                        "https://$APIM_HOST/api/am/publisher/v1/apis?query=$API_NAME&limit=100")
+
+            # Extract lifecycle status using yq/jq
+            STATUS=$(echo "$RESPONSE" | jq -r '.list[] | select(.name=="'"$API_NAME"'") | .lifeCycleStatus')
+
+            if [[ "$STATUS" == "Published" ]]; then
+              echo "✔ API '$API_NAME' is in Published state."
+            else
+              echo "❌ API '$API_NAME' is NOT Published. Current state: $STATUS"
+              FAILED=1
+            fi
+          done
+
+          if [[ $FAILED -eq 1 ]]; then
+            echo "❌ One or more APIs are not published!"
+            exit 1
+          fi
+
+          echo "✅ All deployed APIs are in Published state."

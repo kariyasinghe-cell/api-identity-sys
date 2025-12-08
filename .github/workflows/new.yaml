@@ -751,53 +751,98 @@ jobs:
           if [[ $FAILED -eq 1 ]]; then
             exit 1
           fi
-  
+
   notify-deployment-status:
     name: Teams Deployment Notification
     runs-on: ubuntu-latest
     needs:
       - verify-deployed-apis
-    if: always()   # ensures notification runs even if previous job fails
-    steps:
-      - name: Set Deployment Status
-        id: set_status
-        run: |
-          STATUS="${{ needs.verify-deployed-apis.outputs.deployment_status }}"
-          MESSAGE="${{ needs.verify-deployed-apis.outputs.deployment_message }}"
-          if [ "$STATUS" == "Success" ]; then
-            COLOR="00FF00"
-          else
-            COLOR="FF0000"
-          fi
-          echo "STATUS=$STATUS" >> $GITHUB_ENV
-          echo "COLOR=$COLOR" >> $GITHUB_ENV
-          echo "MESSAGE=$MESSAGE" >> $GITHUB_ENV
+    if: always()
+    env:
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+      RELEASE_VERSION: ${{ inputs.releaseVersion }}
+      DEPLOY_STATUS: ${{ needs.verify-deployed-apis.outputs.deployment_status }}
+      DEPLOY_MESSAGE: ${{ needs.verify-deployed-apis.outputs.deployment_message }}
+      DEPLOY_APIS: ${{ needs.validate-api-artifacts.outputs.DEPLOY_APIS }}
   
-      - name: Send Teams Notification
-        shell: bash
-        env:
-          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-          STATUS: ${{ env.STATUS }}
-          COLOR: ${{ env.COLOR }}
-          MESSAGE: ${{ env.MESSAGE }}
+    steps:
+      - name: Notify Deployment Status
         run: |
-          PAYLOAD=$(jq -n \
-            --arg title "API Deployment Status: $STATUS" \
-            --arg text "$MESSAGE" \
-            --arg color "$COLOR" \
-            '{
-              "@type": "MessageCard",
-              "@context": "http://schema.org/extensions",
-              "themeColor": $color,
-              "summary": $title,
-              "sections": [{
-                "activityTitle": $title,
-                "text": $text
-              }]
-            }')
+  
+          echo "APIs: $DEPLOY_APIS"
+          echo "Status: $DEPLOY_STATUS"
+          echo "Message: $DEPLOY_MESSAGE"
+  
+          set -euo pipefail
+  
+          TITLE=""
+          COLOR=""
+          PASSED_APIS=""
+          FAILED_APIS=""
+  
+          pretty_api_list() {
+            echo "$1" | tr ',' '\n'
+          }
+  
+          # Build passed/failed API sections
+          IFS=',' read -ra API_LIST <<< "$DEPLOY_APIS"
+  
+          for API in "${API_LIST[@]}"; do
+            if grep -q "$API" <<< "$DEPLOY_MESSAGE"; then
+              FAILED_APIS+="- ❌ $API\n"
+            else
+              PASSED_APIS+="- ✅ $API\n"
+            fi
+          done
+  
+          if [[ "$DEPLOY_STATUS" == "Success" ]]; then
+            TITLE="✅ Deployment Verification: All APIs Published"
+            COLOR="2E8B57"
+          else
+            TITLE="❌ Deployment Verification: Some APIs Not Published"
+            COLOR="B22222"
+          fi
+  
+          FACTS="[ \
+            {\"name\":\"📋 Workflow:\", \"value\":\"${{ github.workflow }}\"}, \
+            {\"name\":\"🌿 Branch:\", \"value\":\"${{ github.ref_name }}\"}, \
+            {\"name\":\"🔗 Commit:\", \"value\":\"${{ github.sha }}\"}, \
+            {\"name\":\"👤 Initiated By:\", \"value\":\"${{ github.actor }}\"}, \
+            {\"name\":\"🏷️ Release Version:\", \"value\":\"${{ env.RELEASE_VERSION }}\"}, \
+            {\"name\":\"📂 APIs Verified:\", \"value\":\"\"}, \
+            {\"name\":\"\", \"value\":\"$(echo -e "$(pretty_api_list "$DEPLOY_APIS")" | sed 's/"/\\"/g')\"} \
+          "
+  
+          [[ -n "$PASSED_APIS" ]] && FACTS+=", {\"name\":\"✅ Published APIs\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$PASSED_APIS" | sed 's/"/\\"/g')\"}"
+          [[ -n "$FAILED_APIS" ]] && FACTS+=", {\"name\":\"❌ APIs Not Published\", \"value\":\"\"}, {\"name\":\"\", \"value\":\"$(echo -e "$FAILED_APIS" | sed 's/"/\\"/g')\"}"
+  
+          FACTS+="]"
+  
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            "summary": "$TITLE",
+            "themeColor": "$COLOR",
+            "title": "$TITLE",
+            "sections": [
+              {
+                "activityTitle": "**Repository: ${{ github.repository }}**",
+                "facts": $FACTS
+              },
+              {
+                "text": "**Status Message:**\n\n${DEPLOY_MESSAGE//$'\n'/<br>}"
+              }
+            ]
+          }
+          EOF
+          )
+  
           echo "Sending Teams notification..."
-          curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
-          echo "Notification sent."
+          curl -s -f -H 'Content-Type: application/json' \
+            -d "$JSON_PAYLOAD" \
+            "$TEAMS_WEBHOOK_URL"
+
 
 
 

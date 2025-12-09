@@ -850,3 +850,42 @@ jobs:
 
 
 https://apim.docs.wso2.com/en/3.1.0/develop/customizations/customizing-the-developer-portal/customize-api-listing/categorizing-and-grouping-apis/api-category-based-grouping/
+
+
+
+
+
+
+
+
+
+
+=====================
+
+
+
+
+
+
+
+      - name: Install jq
+        working-directory: ${{ env.WORKSPACE }}
+        run: |
+          echo "Installing jq locally..."
+          JQ_DIR="$RUNNER_WORKSPACE/jq"
+          mkdir -p "$JQ_DIR"
+
+          if [ ! -f "$JQ_DIR/jq" ]; then
+            echo "Downloading jq binary..."
+            wget -O "$JQ_DIR/jq" https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+            chmod +x "$JQ_DIR/jq"
+          else
+            echo "jq already exists at $JQ_DIR/jq"
+          fi
+
+          # Add jq to PATH so later workflow steps can use it
+          echo "$JQ_DIR" >> $GITHUB_PATH
+          echo "jq path added: $JQ_DIR"
+
+          # Display the installed jq version to confirm successful installation
+          echo "jq version: $($JQ_DIR/jq --version)"

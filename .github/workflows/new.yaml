@@ -994,3 +994,16 @@ ZIP_FILES=$(IFS=','; echo "${VALID_ZIPS[*]}")
 
 
 Then your IFS=',' read -ra API_LIST in verify-deployed-apis will work as expected.
+
+
+
+=================
+
+
+# Initialize array
+API_LIST=()
+
+# Read DEPLOY_APIS line by line
+while IFS= read -r line || [ -n "$line" ]; do
+  API_LIST+=("$line")
+done <<< "${{ env.DEPLOY_APIS }}"

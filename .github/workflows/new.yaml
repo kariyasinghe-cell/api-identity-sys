@@ -900,3 +900,55 @@ https://apim.docs.wso2.com/en/3.1.0/develop/customizations/customizing-the-devel
 
 STATUS=$(apictl get apis "$API_NAME" -e "${{ env.APIM_ENV }}" -k \
   | awk -v api="$API_NAME" '$2 == api {print $5}')
+
+
+
+
+==================================
+
+
+
+      - name: Verify APIs are Published
+        id: set_status
+        shell: bash
+        run: |
+          IFS=',' read -ra API_LIST <<< "${{ env.DEPLOY_APIS }}"
+          FAILED=0
+          MESSAGE=""
+          not_deployed_apis=()
+
+          for API_NAME in "${API_LIST[@]}"; do
+            echo "🔍 Verifying API: $API_NAME"
+            
+            # Get current status
+            STATUS=$(apictl get apis "$API_NAME" -e "${{ env.APIM_ENV }}" -k \
+              | awk -v api="$API_NAME" '$2 == api {print $5}')
+
+            echo "Current status of $API_NAME: $STATUS"
+
+            if [[ "$STATUS" == "PUBLISHED" ]]; then
+              echo "✅ $API_NAME is already published."
+
+            elif [[ "$STATUS" == "CREATED" ]]; then
+              echo "⚡ $API_NAME is in CREATED state. Publishing..."
+              apictl publish api "$API_NAME" -e "${{ env.APIM_ENV }}" -k
+              if [[ $? -eq 0 ]]; then
+                echo "✅ $API_NAME published successfully."
+              else
+                echo "❌ Failed to publish $API_NAME."
+                not_deployed_apis+=("$API_NAME")
+              fi
+
+            else
+              echo "❌ $API_NAME is in unexpected state: $STATUS"
+              not_deployed_apis+=("$API_NAME")
+            fi
+          done
+
+          # Export the not deployed APIs as an output variable for further steps
+          if [[ ${#not_deployed_apis[@]} -ne 0 ]]; then
+            echo "APIS_NOT_DEPLOYED=${not_deployed_apis[*]}" >> $GITHUB_ENV
+            echo "⚠️ Some APIs were not deployed: ${not_deployed_apis[*]}"
+          else
+            echo "✅ All APIs are published."
+          fi

@@ -975,3 +975,22 @@ STATUS=$(apictl get apis "$API_NAME" -e "${{ env.APIM_ENV }}" -k \
 
 
 apictl get apis --environment dev --output table | grep "PhoneVerification" | awk '{print $6}'
+
+
+
+==================
+
+
+Option B — Output comma-separated in determine_apis
+
+Instead of:
+
+ZIP_FILES=$(printf "%s\n" "${VALID_ZIPS[@]}")
+
+
+Do:
+
+ZIP_FILES=$(IFS=','; echo "${VALID_ZIPS[*]}")
+
+
+Then your IFS=',' read -ra API_LIST in verify-deployed-apis will work as expected.

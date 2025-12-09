@@ -1007,3 +1007,15 @@ API_LIST=()
 while IFS= read -r line || [ -n "$line" ]; do
   API_LIST+=("$line")
 done <<< "${{ env.DEPLOY_APIS }}"
+
+
+===================
+
+
+1. Prepared .Net msdeploy configuration guide.
+2. .Net pipeline rollouts to dev enviorenments.
+3. Started angular master pipeline for the frontend application rollout.
+4. Update APIM api export & import master pipelines with proper teams notifications.
+5. QA, UAT, QC enviorenment rollout for the tomcat applications.
+6. Discussed with relevant teams and identified requered IAM CI/CD & automation implementations.
+7. Research and implementations on backuping artificats in the pipeline accross the enviorenments.

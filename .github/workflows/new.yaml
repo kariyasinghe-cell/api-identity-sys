@@ -952,3 +952,20 @@ STATUS=$(apictl get apis "$API_NAME" -e "${{ env.APIM_ENV }}" -k \
           else
             echo "✅ All APIs are published."
           fi
+
+
+
+======================
+
+
+We can fix this by using grep + awk more reliably:
+
+STATUS=$(apictl get apis "$API_NAME" -e "${{ env.APIM_ENV }}" -k \
+         | grep -w "$API_NAME" | awk '{print $5}')
+
+
+Or, a more bulletproof approach skipping the header and trimming spaces:
+
+STATUS=$(apictl get apis "$API_NAME" -e "${{ env.APIM_ENV }}" -k \
+         | tail -n +2 \
+         | awk -v api="$API_NAME" '$2 == api {print $5}')

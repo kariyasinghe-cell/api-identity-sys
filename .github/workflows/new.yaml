@@ -889,3 +889,14 @@ https://apim.docs.wso2.com/en/3.1.0/develop/customizations/customizing-the-devel
 
           # Display the installed jq version to confirm successful installation
           echo "jq version: $($JQ_DIR/jq --version)"
+
+
+
+===========
+
+
+
+
+
+STATUS=$(apictl get apis "$API_NAME" -e "${{ env.APIM_ENV }}" -k \
+  | awk -v api="$API_NAME" '$2 == api {print $5}')

@@ -969,3 +969,9 @@ Or, a more bulletproof approach skipping the header and trimming spaces:
 STATUS=$(apictl get apis "$API_NAME" -e "${{ env.APIM_ENV }}" -k \
          | tail -n +2 \
          | awk -v api="$API_NAME" '$2 == api {print $5}')
+
+
+===
+
+
+apictl get apis --environment dev --output table | grep "PhoneVerification" | awk '{print $6}'

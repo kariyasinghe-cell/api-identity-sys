@@ -1227,3 +1227,21 @@ notify-deployment-status:
         echo "Sending Teams notification..."
         curl -s -H "Content-Type: application/json" -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL_APIM_IMPORT"
         echo "Notification sent."
+
+================================
+
+  validate-version:
+    name: Validate Release Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check semantic version format
+        run: |
+          VERSION="${{ github.event.inputs.releaseVersion }}"
+          echo "Validating version: $VERSION"
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ ERROR: releaseVersion must follow semantic versioning (e.g., 1.2.3)"
+            exit 1
+          fi
+
+          echo "✔ Valid semantic version"

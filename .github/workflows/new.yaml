@@ -1239,7 +1239,7 @@ notify-deployment-status:
           VERSION="${{ github.event.inputs.releaseVersion }}"
           echo "Validating version: $VERSION"
 
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ^[0-9]+\.[0-9]+\.[0-9]+(-(EA|RC)(\.[0-9]+)?)?$ ]]; then
             echo "❌ ERROR: releaseVersion must follow semantic versioning (e.g., 1.2.3)"
             exit 1
           fi

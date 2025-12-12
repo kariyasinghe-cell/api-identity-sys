@@ -1,0 +1,251 @@
+name: Export WSO2 APIs to GitHub Release
+
+on:
+  workflow_call:
+    inputs:
+      includeAPIs:
+        description: 'Comma-separated list of APIM APIs to include'
+        required: true
+        type: string
+      environment:
+        description: "Enviorenment name configured in APIM"
+        required: true
+        type: string
+      version:
+        description: "Release version tag"
+        required: true
+        type: string
+
+jobs:
+  export-and-release:
+    env:
+      APIM_ENV: ${{ inputs.environment }}
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install apictl
+        working-directory: ${{ env.WORKSPACE }}
+        run: |
+          echo $RUNNER_WORKSPACE
+          WORK_DIR="$RUNNER_WORKSPACE/apictl-4.1.6"
+          mkdir -p "$WORK_DIR"
+ 
+          if [ ! -f "$WORK_DIR/apictl/apictl" ]; then
+            cd "$WORK_DIR"
+            echo "Downloading apictl to $WORK_DIR..."
+            wget "https://github.com/wso2/product-apim-tooling/releases/download/v4.1.6/apictl-4.1.6-linux-amd64.tar.gz"
+            tar -xvzf apictl-4.1.6-linux-amd64.tar.gz
+          fi
+          chmod +x "$WORK_DIR/apictl/apictl"
+ 
+          echo "$WORK_DIR/apictl" >> $GITHUB_PATH
+          echo "apictl path added to PATH: $WORK_DIR"
+
+      - name: Add Environment
+        shell: bash
+        run: |
+          case "${{ github.event.inputs.environment }}" in
+            "Dev")
+              APIM_ENV_URL=${{ secrets.APIM_ENV_URL_DEV }}
+              ;;
+            "SIT")
+              APIM_ENV_URL=${{ secrets.APIM_ENV_URL_SIT }}
+              ;;
+            "SIT-sandbox")
+              APIM_ENV_URL=${{ secrets.APIM_ENV_URL_SIT_SANDBOX }}
+              ;;
+            "UAT-node-1")
+               APIM_ENV_URL=${{ secrets.APIM_ENV_URL_UAT_NODE_1 }}
+               ;;
+            "UAT-node-2")
+              APIM_ENV_URL=${{ secrets.APIM_ENV_URL_UAT_NODE_2 }}
+              ;;
+            "STG-sandbox")
+              APIM_ENV_URL=${{ secrets.APIM_ENV_URL_STG_SANDBOX }}
+              ;;
+            *)
+              echo "❌ Unknown environment"
+              exit 1
+              ;;
+          esac
+
+          if apictl get envs | grep -q "${{ env.APIM_ENV }}"; then
+            echo "Environment '${{ env.APIM_ENV }}' already exists. Skipping."
+          else
+            apictl add env ${{ env.APIM_ENV }} --apim https://$APIM_ENV_URL
+          fi
+
+      - name: Login to APIM
+        run: |
+          set -euo pipefail
+          # Increase apictl timeout
+          apictl set --http-request-timeout 300000
+
+          case "${{ github.event.inputs.environment }}" in
+            "Dev")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_DEV }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_DEV }}
+              ;;
+            "SIT")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_SIT }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_SIT }}
+              ;;
+            "SIT-sandbox")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_SIT_SANDBOX }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_SIT_SANDBOX }}
+              ;;
+            "UAT-node-1")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_UAT_NODE_1 }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_UAT_NODE_1 }}
+              ;;
+            "UAT-node-2")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_UAT_NODE_2 }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_UAT_NODE_2 }}
+              ;;
+            "STG-sandbox")
+              APIM_USERNAME=${{ secrets.APIM_USERNAME_STG_SANDBOX }}
+              APIM_PASSWORD=${{ secrets.APIM_PASSWORD_STG_SANDBOX }}
+              ;;
+            *)
+              echo "❌ Unknown environment"
+              exit 1
+              ;;
+          esac
+     
+          # Login to APIM
+          apictl login "${{ env.APIM_ENV }}" -u "$APIM_USERNAME" -p "$APIM_PASSWORD" -k --verbose
+
+      - name: Set export directory to ./dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
+          apictl set --export-directory "${GITHUB_WORKSPACE}/dist"
+           
+      - name: List all APIs from API Manager
+        id: list_apis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "Fetching APIs from environment: ${APIM_ENV}"
+
+          # --- 1. Get ALL APIs available in APIM ---
+          mapfile -t ALL_APIS < <(apictl get apis -e "${APIM_ENV}" -k | awk 'NR>1 && $2 != "" {print $2}')
+
+          if (( ${#ALL_APIS[@]} == 0 )); then
+            echo "❌ No APIs found in APIM."
+            echo "api_names=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Available APIs in APIM:"
+          printf '%s\n' "${ALL_APIS[@]}"
+
+          # --- 2. Read user input ---
+          USER_INPUT="${{ inputs.includeAPIs }}"
+
+          VALID_APIS=()
+
+          if [[ -z "$USER_INPUT" ]]; then
+            echo "No user input provided → exporting ALL APIs."
+            VALID_APIS=("${ALL_APIS[@]}")
+          else
+            echo "User-provided API list: $USER_INPUT"
+            IFS=',' read -ra USER_APIS <<< "$USER_INPUT"
+
+            # --- 3. Validate each user API ---
+            for api in "${USER_APIS[@]}"; do
+              api_trimmed="$(echo "$api" | xargs)"  # trim spaces
+              if printf '%s\n' "${ALL_APIS[@]}" | grep -Fxq "$api_trimmed"; then
+                VALID_APIS+=("$api_trimmed")
+              else
+                echo "⚠️ Given API is not available in APIM: $api_trimmed"
+              fi
+            done
+
+            if (( ${#VALID_APIS[@]} == 0 )); then
+              echo "❌ None of the user-provided APIs are valid. Exiting."
+              echo "api_names=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "✔ Valid APIs to export:"
+          printf '%s\n' "${VALID_APIS[@]}"
+
+          # Convert array to CSV
+          api_csv="$(printf '%s,' "${VALID_APIS[@]}" | sed 's/,$//')"
+          echo "api_names=${api_csv}" >> "$GITHUB_OUTPUT"
+   
+      - name: Export APIs
+        shell: bash
+        run: |
+          set -euo pipefail
+      
+          API_NAMES="${{ steps.list_apis.outputs.api_names }}"
+      
+          if [[ -z "$API_NAMES" ]]; then
+            echo "No APIs to export. Skipping."
+            exit 0
+          fi
+      
+          echo "Exporting APIs: $API_NAMES"
+      
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
+      
+          IFS=',' read -r -a API_ARRAY <<< "$API_NAMES"
+      
+          for API_NAME in "${API_ARRAY[@]}"; do
+            echo ""
+            echo "============================================="
+            echo "→ Processing API: $API_NAME"
+            echo "============================================="
+      
+            # Get raw record from APIM
+            RECORD="$(apictl get apis -e "${APIM_ENV}" -k | awk -v n="$API_NAME" 'NR>1 && $2==n')"
+      
+            if [[ -z "$RECORD" ]]; then
+              echo "❌ ERROR: Could not find API $API_NAME in APIM"
+              continue
+            fi
+      
+            VERSION="$(awk '{print $3}' <<< "$RECORD")"
+            PROVIDER="$(awk '{print $4}' <<< "$RECORD")"
+      
+            if [[ -z "$VERSION" || -z "$PROVIDER" ]]; then
+              echo "❌ ERROR: Could not extract version/provider for $API_NAME"
+              echo "Record: $RECORD"
+              continue
+            fi
+      
+            echo "→ Resolved version: $VERSION"
+            echo "→ Resolved provider: $PROVIDER"
+      
+            # Export API safely
+            if apictl export api -n "$API_NAME" -v "$VERSION" -r "$PROVIDER" \
+                  -e "${APIM_ENV}" --format YAML -k; then
+              echo "✔ Exported $API_NAME successfully"
+            else
+              echo "❌ Export failed for $API_NAME"
+            fi
+      
+          done
+      
+          echo "Exported API files:"
+          ls -la "${GITHUB_WORKSPACE}/dist"
+     
+      - name: Create (or update) GitHub Release and upload assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          # If a release for this tag already exists, just upload assets; otherwise create it
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists; uploading assets"
+            gh release upload "$TAG" "${GITHUB_WORKSPACE}"/dist/* --clobber
+          else
+            echo "Creating release $TAG and uploading assets"
+            gh release create "$TAG" "${GITHUB_WORKSPACE}"/dist/* --generate-notes
+          fi

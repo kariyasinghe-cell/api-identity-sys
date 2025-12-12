@@ -2,15 +2,33 @@ name: WSO2 APIM API Deploying - APIM Team
 on:
   workflow_dispatch:
     inputs:
+      branch:
+        description: "Branch to Deploy APIs"
+        required: false
+        default: "main"
       includeAPIs:
-        description: 'Comma-separated list of APIM APIs to include (leave empty to include all)'
+        description: 'Comma-separated list of APIs to Deploy(leave empty to deploy all)'
         required: false
         default: ''
+      environment:
+        description: 'Select the Deployment Environment'
+        required: false
+        type: choice
+        options:
+          - 'Dev'
+          - 'SIT'
+          - 'SIT-sandbox'
+          - 'UAT-node-1'
+          - 'UAT-node-2'
+          - 'STG-sandbox'
+        default: 'Dev'
 
 jobs:
   deploy-apis:
     uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
     with:
       includeAPIs: ${{ github.event.inputs.includeAPIs }}
+      branch: ${{ github.event.inputs.branch }}
+      environment: ${{ github.event.inputs.environment }}
       triggeredBy: "apim-team"
     secrets: inherit

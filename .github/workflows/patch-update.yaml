@@ -1,0 +1,99 @@
+name: WSO2 APIM Patch Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      wso2_email:
+        description: "WSO2 Subscription Email"
+        required: true
+        type: string
+      wso2_password:
+        description: "WSO2 Subscription Password"
+        required: true
+        type: password
+
+  schedule:
+    - cron: '0 2 * * 0'   # every Sunday 2 AM
+
+jobs:
+  wso2_patch_update:
+    name: Apply WSO2 Patch via WUM
+    runs-on: ubuntu-latest
+
+    env:
+      WSO2_HOME: /opt/wso2am-4.1.0
+      PRODUCT: wso2am-4.1.0
+      BACKUP_DIR: /opt/backups/wso2am-${{ github.run_id }}
+      WUM_REPO: ${{ github.workspace }}/wum-repo/products/wso2am-4.1.0
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install WUM if missing
+        run: |
+          if ! command -v wum &>/dev/null; then
+            echo "Installing WUM..."
+            curl -LO https://product-dist.wso2.com/downloads/wum/wum-3.1.0-linux-x64.tar.gz
+            tar -xvzf wum-3.1.0-linux-x64.tar.gz
+            sudo mv wum/bin/wum /usr/local/bin/
+          fi
+          wum --version
+
+      - name: Initialize WUM with user credentials
+        run: |
+          echo "Initializing WUM..."
+          wum init -u "${{ inputs.wso2_email }}" -p "${{ inputs.wso2_password }}"
+          wum status
+
+      - name: Register product
+        run: |
+          echo "Registering product with WUM..."
+          wum add "${PRODUCT}"
+
+      - name: Backup current WSO2 installation
+        run: |
+          echo "Backing up WSO2..."
+          mkdir -p "$BACKUP_DIR"
+          cp -r "$WSO2_HOME"/* "$BACKUP_DIR"
+
+      - name: Stop WSO2 server
+        run: |
+          echo "Stopping WSO2 server..."
+          $WSO2_HOME/bin/wso2server.sh stop
+          sleep 10
+
+      - name: Update WUM repo and Apply Patch
+        run: |
+          echo "Updating WUM repo..."
+          wum update
+          echo "Applying patch..."
+          wum apply "$PRODUCT"
+
+      - name: Deploy patched product
+        run: |
+          echo "Deploying patched product..."
+          rsync -av --delete "$WUM_REPO/" "$WSO2_HOME/"
+
+      - name: Start WSO2 server
+        run: |
+          echo "Starting WSO2 server..."
+          $WSO2_HOME/bin/wso2server.sh start
+          sleep 30
+
+      - name: Verify server status and notify Teams
+        run: |
+          STATUS=$(curl -sf https://localhost:9443/carbon && echo "UP" || echo "DOWN")
+          if [ "$STATUS" = "UP" ]; then
+            echo "Server is UP. Patch applied successfully!"
+            curl -H "Content-Type: application/json" \
+              -d "{\"text\":\"✅ WSO2 APIM patch applied successfully on $HOSTNAME.\"}" \
+              $TEAMS_WEBHOOK_URL
+          else
+            echo "Server failed to start after patch!"
+            curl -H "Content-Type: application/json" \
+              -d "{\"text\":\"❌ WSO2 APIM failed to start after patch on $HOSTNAME. Check logs.\"}" \
+              $TEAMS_WEBHOOK_URL
+            exit 1
+          fi

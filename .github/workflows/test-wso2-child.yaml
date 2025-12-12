@@ -1,11 +1,30 @@
 name: WSO2 APIM API Deploying - Developer
 on:
   workflow_dispatch:
-
+    inputs:
+      branch:
+        description: "Branch to Deploy APIs"
+        required: false
+        default: "main"
+      environment:
+        description: 'Select the Deployment Environment'
+        required: false
+        type: choice
+        options:
+          - 'Dev'
+          - 'SIT'
+          - 'SIT-sandbox'
+          - 'UAT-node-1'
+          - 'UAT-node-2'
+          - 'STG-sandbox'
+        default: 'Dev'
+  
 jobs:
   deploy-apis:
     uses: kariyasinghe-cell/wso2-workflows/.github/workflows/test-wso2-apis.yaml@main
     with:
-      includeAPIs: "v1"
+      branch: ${{ github.event.inputs.branch }}
+      includeAPIs: "KavinduAPI_1.0.0_Revision-1.zip"
       triggeredBy: "developer"
+      environment: ${{ github.event.inputs.environment }}
     secrets: inherit

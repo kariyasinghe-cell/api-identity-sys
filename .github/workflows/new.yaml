@@ -1245,3 +1245,30 @@ notify-deployment-status:
           fi
 
           echo "✔ Valid semantic version"
+
+
+=================================
+
+jobs:
+  test-telnet:
+    name: Test Telnet Connection on Self-Hosted Runner
+    runs-on: [self-hosted, linux]
+
+    steps:
+      - name: Test Telnet Connection
+        id: telnet_test
+        run: |
+          HOST="your-hostname-here"   # replace with your target host
+          PORT="22"                    # replace with your target port
+
+          echo "Testing telnet to $HOST:$PORT ..."
+
+          # Try connecting with timeout
+          if timeout 5 telnet "$HOST" "$PORT" </dev/null; then
+            echo "Telnet connection successful"
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "Telnet connection failed"
+            echo "status=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi

@@ -18,7 +18,7 @@ on:
 jobs:
   wso2_patch_update:
     name: Apply WSO2 Patch via WUM
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
 
     env:
       WSO2_HOME: /opt/wso2am-4.1.0

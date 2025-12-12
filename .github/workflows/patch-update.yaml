@@ -10,7 +10,7 @@ on:
       wso2_password:
         description: "WSO2 Subscription Password"
         required: true
-        type: secret
+        type: password
 
   schedule:
     - cron: '0 2 * * 0'   # every Sunday 2 AM
